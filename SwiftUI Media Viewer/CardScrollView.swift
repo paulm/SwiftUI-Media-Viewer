@@ -28,13 +28,14 @@ struct CardScrollView: View {
     
     // Simple enum to track active control
     enum ControlType {
-        case cards, physicsSlider, standardSlider
+        case cards, physicsSlider, standardSlider, scaleSlider
     }
     @State private var activeControl: ControlType = .cards
     
     // Slider values
     @State private var physicsSliderValue: Double = 0
     @State private var standardSliderValue: Double = 0
+    @State private var scaleSliderValue: Double = 0.5 // Default to center (normal scale)
     
     // Physics properties
     @State private var velocity: Double = 0
@@ -46,25 +47,27 @@ struct CardScrollView: View {
     // Total number of cards
     private let totalCards = 100
     
+    // Computed scale factor (0.0 -> 1/8x, 0.5 -> 1x, 1.0 -> 3x)
+    private var cardScale: CGFloat {
+        let minScale: CGFloat = 0.125 // 1/8 size
+        let maxScale: CGFloat = 3.0   // 3x size
+        
+        if scaleSliderValue <= 0.5 {
+            // Scale between 1/8 and 1.0 for the left half of the slider
+            return minScale + (1.0 - minScale) * CGFloat(scaleSliderValue * 2)
+        } else {
+            // Scale between 1.0 and 3.0 for the right half of the slider
+            return 1.0 + (maxScale - 1.0) * CGFloat((scaleSliderValue - 0.5) * 2)
+        }
+    }
+    
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
                 // Background
                 Color.white.ignoresSafeArea()
                 
-                // Dim background when card is expanded
-                if isExpanded {
-                    Color.black.opacity(0.5)
-                        .ignoresSafeArea()
-                        .zIndex(99)
-                        .onTapGesture {
-                            // Collapse the expanded card when tapping background
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                expandedCardIndex = nil
-                                isExpanded = false
-                            }
-                        }
-                }
+                // Dim background when card is expanded - handled inside ScrollView
                 
                 // Dismiss button
                 Button(action: onDismiss) {
@@ -75,132 +78,167 @@ struct CardScrollView: View {
                 }
                 .zIndex(101) // Keep dismiss button on top
                 
-                // Main content with ScrollViewReader for programmatic scrolling
-                ScrollViewReader { scrollViewReader in
-                    VStack(spacing: 20) {
-                        ZStack {
-                            // Background
-                            Color.white
-                                .edgesIgnoringSafeArea(.all)
+                // Main content with vertical scrolling and ScrollViewReader for programmatic scrolling
+                ScrollView(.vertical, showsIndicators: true) {
+                    ScrollViewReader { scrollViewReader in
+                        VStack(spacing: 20) {
+                            // Spacer for close button area
+                            Spacer().frame(height: 50)
                             
-                            // Dimmed background when expanded
-                            if isExpanded {
-                                Color.black
-                                    .opacity(0.6)
-                                    .ignoresSafeArea()
-                                    .onTapGesture {
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                            expandedCardIndex = nil
-                                            isExpanded = false
-                                        }
-                                    }
-                                    .zIndex(90)
-                            }
-                            
-                            // Card scrollview
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 12) {
-                                    ForEach(0..<totalCards, id: \.self) { index in
-                                        cardView(for: index, isActive: index == currentCardIndex && !isExpanded)
-                                            .frame(width: 100, height: 125)
-                                            .id(index) // For scrollViewReader
-                                            .background(
-                                                GeometryReader { geo in
-                                                    Color.clear
-                                                        .onAppear {
-                                                            viewWidth = geometry.size.width
-                                                        }
-                                                        .onChange(of: geo.frame(in: .named("scrollView"))) { _, frame in
-                                                            if !isExpanded {
-                                                                checkIfCardIsCentered(frame: frame, index: index)
-                                                            }
-                                                        }
-                                                }
-                                            )
-                                    }
-                                }
-                                .padding(.horizontal, (geometry.size.width - 100) / 2)
-                                .opacity(isExpanded ? 0.4 : (activeControl == .cards ? 1.0 : 0.7))
-                                .saturation(activeControl == .cards ? 1.0 : 0.6)
-                            }
-                            .gesture(
-                                DragGesture(minimumDistance: 5)
-                                    .onChanged { _ in
-                                        activeControl = .cards
-                                    }
-                            )
-                            .coordinateSpace(name: "scrollView")
-                            .frame(height: geometry.size.height * 0.7)
-                            .allowsHitTesting(!isExpanded)
-                            .zIndex(1)
-                            
-                            // Expanded card overlay
-                            if isExpanded, let expandedIndex = expandedCardIndex {
-                                // Get position of the original card
-                                GeometryReader { geo in
-                                    // The expanded card
-                                    cardView(for: expandedIndex, isActive: false)
-                                        .frame(width: 300, height: 375) // 3x the original size
-                                        .shadow(radius: 10)
-                                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                            ZStack {
+                                // Background
+                                Color.white
+                                    .edgesIgnoringSafeArea(.all)
+                                
+                                // Dimmed background when expanded
+                                if isExpanded {
+                                    Color.black
+                                        .opacity(0.6)
+                                        .ignoresSafeArea()
+                                        .frame(width: geometry.size.width, height: geometry.size.height)
+                                        .position(x: geometry.size.width/2, y: geometry.size.height/2)
                                         .onTapGesture {
                                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                                 expandedCardIndex = nil
                                                 isExpanded = false
                                             }
                                         }
+                                        .zIndex(90)
                                 }
-                                .zIndex(100)
+                                
+                                // Card scrollview
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    // Centering container helps maintain the current card's position during scaling
+                                    ZStack(alignment: .center) {
+                                        HStack(spacing: 12) {
+                                            ForEach(0..<totalCards, id: \.self) { index in
+                                                cardView(for: index, isActive: index == currentCardIndex && !isExpanded)
+                                                    .frame(width: 100, height: 125)
+                                                    .id(index) // For scrollViewReader
+                                                    .background(
+                                                        GeometryReader { geo in
+                                                            Color.clear
+                                                                .onAppear {
+                                                                    viewWidth = geometry.size.width
+                                                                }
+                                                                .onChange(of: geo.frame(in: .named("scrollView"))) { _, frame in
+                                                                    if !isExpanded {
+                                                                        checkIfCardIsCentered(frame: frame, index: index)
+                                                                    }
+                                                                }
+                                                        }
+                                                    )
+                                            }
+                                        }
+                                        .padding(.horizontal, (geometry.size.width - 100) / 2)
+                                        .opacity(isExpanded ? 0.4 : (activeControl == .cards ? 1.0 : 0.7))
+                                        .saturation(activeControl == .cards ? 1.0 : 0.6)
+                                    }
+                                    .scaleEffect(cardScale)
+                                    .animation(.easeInOut(duration: 0.15), value: cardScale) // Smooth animation when scale changes
+                                }
+                                .gesture(
+                                    DragGesture(minimumDistance: 5)
+                                        .onChanged { _ in
+                                            activeControl = .cards
+                                        }
+                                )
+                                .coordinateSpace(name: "scrollView")
+                                .frame(height: 150) // Fixed height for card area, scaling handled by scaleEffect
+                                .clipped() // Prevent contents from exceeding bounds when scaled
+                                .allowsHitTesting(!isExpanded)
+                                .zIndex(1)
+                                
+                                // Expanded card overlay
+                                if isExpanded, let expandedIndex = expandedCardIndex {
+                                    // Get position of the original card
+                                    GeometryReader { geo in
+                                        // The expanded card
+                                        cardView(for: expandedIndex, isActive: false)
+                                            .frame(width: 300, height: 375) // 3x the original size
+                                            .scaleEffect(cardScale, anchor: .center) // Apply scaling effect
+                                            .shadow(radius: 10)
+                                            .position(x: geometry.size.width / 2, y: 180)
+                                            .onTapGesture {
+                                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                                    expandedCardIndex = nil
+                                                    isExpanded = false
+                                                }
+                                            }
+                                    }
+                                    .zIndex(100)
+                                }
                             }
-                        }
-                        
-                        // Control section
-                        VStack(spacing: 24) {
-                            // Physics-based slider
-                            sliderSection(
-                                title: "Physics Slider",
-                                value: $physicsSliderValue,
-                                color: .blue,
-                                isActive: activeControl == .physicsSlider,
-                                onActivate: { activeControl = .physicsSlider },
-                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: true) },
-                                geometry: geometry,
-                                isDisabled: isExpanded
+                            .padding(.bottom, 20) // Add spacing between cards and controls
+                            
+                            // Control section
+                            VStack(spacing: 24) {
+                                // Title for controls
+                                Text("Controls")
+                                    .font(.headline)
+                                    .foregroundColor(.gray)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.bottom, 4)
+                                // Physics-based slider
+                                sliderSection(
+                                    title: "Physics Slider",
+                                    value: $physicsSliderValue,
+                                    color: .blue,
+                                    isActive: activeControl == .physicsSlider,
+                                    onActivate: { activeControl = .physicsSlider },
+                                    onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: true) },
+                                    geometry: geometry,
+                                    isDisabled: isExpanded
+                                )
+                                
+                                // Standard slider 
+                                sliderSection(
+                                    title: "Standard Slider",
+                                    value: $standardSliderValue,
+                                    color: .green,
+                                    isActive: activeControl == .standardSlider,
+                                    onActivate: { activeControl = .standardSlider },
+                                    onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: false) },
+                                    geometry: geometry,
+                                    usesPhysics: false,
+                                    isDisabled: isExpanded
+                                )
+                                
+                                // Scale slider
+                                scaleSliderSection(
+                                    geometry: geometry,
+                                    isDisabled: isExpanded
+                                )
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 20)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color.white)
+                                    .shadow(color: .gray.opacity(0.2), radius: 5, x: 0, y: 2)
                             )
                             
-                            // Standard slider 
-                            sliderSection(
-                                title: "Standard Slider",
-                                value: $standardSliderValue,
-                                color: .green,
-                                isActive: activeControl == .standardSlider,
-                                onActivate: { activeControl = .standardSlider },
-                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: false) },
-                                geometry: geometry,
-                                usesPhysics: false,
-                                isDisabled: isExpanded
-                            )
+                            // Add some bottom padding for scrolling
+                            Spacer().frame(height: 30)
                         }
-                        .padding(.horizontal)
-                    }
-                    .onAppear {
-                        scrollViewProxy = scrollViewReader
-                        impactFeedback.prepare()
-                    }
-                    .onChange(of: currentCardIndex) { _, newIndex in
-                        // When the card changes, update the inactive sliders
-                        if activeControl != .physicsSlider {
-                            physicsSliderValue = Double(newIndex)
+                        .onAppear {
+                            scrollViewProxy = scrollViewReader
+                            impactFeedback.prepare()
                         }
-                        if activeControl != .standardSlider {
-                            standardSliderValue = Double(newIndex)
+                        .onChange(of: currentCardIndex) { _, newIndex in
+                            // When the card changes, update the inactive sliders
+                            if activeControl != .physicsSlider {
+                                physicsSliderValue = Double(newIndex)
+                            }
+                            if activeControl != .standardSlider {
+                                standardSliderValue = Double(newIndex)
+                            }
                         }
                     }
                 }
-                .frame(height: geometry.size.height)
-                .frame(maxHeight: .infinity)
-                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .ignoresSafeArea()
         }
     }
     
@@ -403,15 +441,91 @@ struct CardScrollView: View {
         .disabled(isDisabled)
     }
     
+    // Scale slider section
+    func scaleSliderSection(
+        geometry: GeometryProxy,
+        isDisabled: Bool = false
+    ) -> some View {
+        VStack(spacing: 4) {
+            // Title
+            Text("Scale")
+                .font(.caption)
+                .foregroundColor(activeControl == .scaleSlider ? .purple : .gray.opacity(0.5))
+                .fontWeight(activeControl == .scaleSlider ? .bold : .regular)
+            
+            // Slider
+            VStack {
+                // When inactive, provide tap area to activate
+                if activeControl != .scaleSlider {
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .frame(height: 44)
+                        .onTapGesture {
+                            activeControl = .scaleSlider
+                        }
+                }
+                
+                // Scale slider
+                Slider(value: $scaleSliderValue, in: 0...1)
+                    .accentColor(.purple)
+                    .opacity(activeControl == .scaleSlider ? 1.0 : 0.5)
+                    .onChange(of: scaleSliderValue) { _, _ in
+                        // Ensure we recenter on the current card when scaling
+                        if activeControl == .scaleSlider && scrollViewProxy != nil {
+                            // Immediately recenter on the current card as scale changes
+                            // This ensures the card stays anchored in place while scaling
+                            scrollToCard(index: currentCardIndex, proxy: scrollViewProxy!, useAnimation: false)
+                        }
+                    }
+                    .onTapGesture {
+                        if activeControl != .scaleSlider {
+                            activeControl = .scaleSlider
+                        }
+                    }
+                    .disabled(activeControl != .scaleSlider)
+                
+                // Scale indicators
+                HStack {
+                    Text("1/8×")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    
+                    // Show current scale factor
+                    let formattedScale = String(format: "%.2f×", cardScale)
+                    Text(formattedScale)
+                        .font(.caption2)
+                        .foregroundColor(.purple)
+                        .padding(4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.purple.opacity(0.1))
+                        )
+                    
+                    Spacer()
+                    Text("3×")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+        .disabled(isDisabled)
+    }
+    
     // Scroll to a specific card - with animation for physics slider, instant for standard slider
     func scrollToCard(index: Int, proxy: ScrollViewProxy, useAnimation: Bool = false) {
+        // Use a custom anchor if we're scaling and need to keep the card centered
+        let anchor: UnitPoint = .center
+        
         if useAnimation {
             withAnimation(.linear(duration: 0.01)) {
-                proxy.scrollTo(index, anchor: .center)
+                proxy.scrollTo(index, anchor: anchor)
             }
         } else {
             // No animation - instant jump
-            proxy.scrollTo(index, anchor: .center)
+            proxy.scrollTo(index, anchor: anchor)
         }
     }
     
