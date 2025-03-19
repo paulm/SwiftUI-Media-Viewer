@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var mediaItems: [MediaItem] = []
     
     let columns = [
-        GridItem(.adaptive(minimum: 50, maximum: 75), spacing: 12)
+        GridItem(.adaptive(minimum: 75, maximum: 80), spacing: 10)
     ]
     
     var body: some View {
@@ -35,7 +35,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, minHeight: 300)
                     } else {
                         // Media grid
-                        LazyVGrid(columns: columns, spacing: 12) {
+                        LazyVGrid(columns: columns, spacing: 8) {
                             ForEach(Array(mediaItems.enumerated()), id: \.element.id) { index, item in
                                 MediaThumbnail(item: item) {
                                     selectedMediaIndex = index
@@ -43,7 +43,7 @@ struct ContentView: View {
                                 }
                             }
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 10)
                     }
                 }
                 .padding(.vertical)
@@ -191,17 +191,17 @@ struct MediaThumbnail: View {
                             }
                         }
                     } else {
-                        // Video thumbnail
+                        // Video thumbnail (just show icon)
                         ZStack {
                             Rectangle()
-                                .fill(Color.black.opacity(0.8))
-                            Image(systemName: "play.fill")
-                                .font(.caption)
+                                .fill(Color(UIColor.systemGray5))
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.system(size: 20))
                                 .foregroundColor(.white)
                         }
                     }
                 }
-                .frame(height: 60)
+                .frame(width: 60, height: 60) // Square aspect ratio
                 .clipped()
                 .cornerRadius(4)
                 

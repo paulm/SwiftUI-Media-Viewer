@@ -4,8 +4,8 @@ A polished, SwiftUI-based media viewer for iOS that supports both images and vid
 This viewer provides a user experience similar to Apple's Photos app with smooth transitions, responsive
 gestures, and intuitive controls.
 
-\![Platform](https://img.shields.io/badge/Platform-iOS%2016.0+-blue.svg)
-\![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg)
+![Platform](https://img.shields.io/badge/Platform-iOS%2016.0+-blue.svg)
+![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg)
 
 ## Features
 
@@ -164,6 +164,188 @@ Several aspects of the viewer can be customized:
 ### Controls Behavior
 - Adjust auto-hide delay timing in the `controlsAutoHideDelay` property
 - Modify video controls appearance and layout
+
+## Implementation Details
+
+### Media Item Structure
+
+The `MediaItem` struct encapsulates both images and videos:
+
+```swift
+struct MediaItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let type: MediaType
+    var thumbnailImage: UIImage?
+    
+    enum MediaType {
+        case image
+        case video
+    }
+}
+```
+
+### Gesture Handling
+
+The viewer uses a sophisticated gesture system:
+
+```swift
+// Horizontal swipe for navigation
+var dragGesture: some Gesture {
+    DragGesture()
+        .onChanged { value in
+            withAnimation(.interactiveSpring()) {
+                offsetX = value.translation.width
+            }
+        }
+        .onEnded { value in
+            let threshold = screenWidth * 0.25
+            let velocity = value.predictedEndLocation.x - value.location.x
+            
+            if offsetX > threshold || velocity > 500 {
+                if currentIndex > 0 {
+                    withAnimation(.spring()) {
+                        currentIndex -= 1
+                        offsetX = 0
+                    }
+                    hapticFeedback(.medium)
+                } else {
+                    withAnimation(.spring()) { offsetX = 0 }
+                }
+            } else if offsetX < -threshold || velocity < -500 {
+                if currentIndex < mediaItems.count - 1 {
+                    withAnimation(.spring()) {
+                        currentIndex += 1
+                        offsetX = 0
+                    }
+                    hapticFeedback(.medium)
+                } else {
+                    withAnimation(.spring()) { offsetX = 0 }
+                }
+            } else {
+                withAnimation(.spring()) { offsetX = 0 }
+            }
+        }
+}
+```
+
+### ZoomableMediaView
+
+The `ZoomableMediaView` handles zooming and panning:
+
+```swift
+struct ZoomableMediaView<Content: View>: View {
+    @State private var scale: CGFloat = 1.0
+    @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @GestureState private var isInteracting: Bool = false
+    
+    let content: Content
+    let onTap: () -> Void
+    let onDoubleTap: () -> Void
+    
+    init(@ViewBuilder content: () -> Content, 
+         onTap: @escaping () -> Void,
+         onDoubleTap: @escaping () -> Void) {
+        self.content = content()
+        self.onTap = onTap
+        self.onDoubleTap = onDoubleTap
+    }
+    
+    var body: some View {
+        content
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(panGesture)
+            .gesture(zoomGesture)
+            .gesture(tapGesture)
+            .gesture(doubleTapGesture)
+            .animation(isInteracting ? .interactiveSpring() : .spring(), value: scale)
+            .animation(isInteracting ? .interactiveSpring() : .spring(), value: offset)
+    }
+    
+    // Gesture implementations...
+}
+```
+
+### VideoPlayerView
+
+The `VideoPlayerView` handles video playback with custom controls:
+
+```swift
+struct VideoPlayerView: View {
+    @State private var player: AVPlayer
+    @State private var isPlaying = false
+    @State private var showControls = true
+    @State private var seekPosition: Double = 0
+    @State private var duration: Double = 0
+    
+    let url: URL
+    
+    init(url: URL) {
+        self.url = url
+        let player = AVPlayer(url: url)
+        self._player = State(initialValue: player)
+    }
+    
+    var body: some View {
+        ZStack {
+            VideoPlayer(player: player)
+                .aspectRatio(contentMode: .fit)
+                .onAppear {
+                    setupPlayer()
+                }
+                .onDisappear {
+                    player.pause()
+                }
+            
+            if showControls {
+                controlsOverlay
+            }
+        }
+        .onTapGesture {
+            withAnimation {
+                showControls.toggle()
+            }
+        }
+    }
+    
+    // Video player setup and control methods...
+}
+```
+
+### Performance Optimizations
+
+The viewer uses several techniques to maintain smooth performance:
+
+1. **Lazy Loading**: Media items are loaded only when needed
+2. **Prefetching**: Adjacent items are prefetched to ensure smooth navigation
+3. **Memory Management**: Resources are released when no longer needed
+4. **Async Image Loading**: Images are loaded asynchronously to prevent UI blocking
+5. **Hardware Acceleration**: Uses Metal for image rendering when available
+
+### Accessibility
+
+The viewer includes accessibility features:
+
+```swift
+.accessibilityLabel("Image \(currentIndex + 1) of \(mediaItems.count)")
+.accessibilityAddTraits(.isImage)
+.accessibilityAction(named: "Next Image") {
+    if currentIndex < mediaItems.count - 1 {
+        withAnimation { currentIndex += 1 }
+    }
+}
+.accessibilityAction(named: "Previous Image") {
+    if currentIndex > 0 {
+        withAnimation { currentIndex -= 1 }
+    }
+}
+.accessibilityAction(named: "Close Viewer") {
+    onDismiss()
+}
+```
 
 ## Future Enhancements
 
