@@ -163,7 +163,7 @@ struct CardScrollView: View {
                                 color: .blue,
                                 isActive: activeControl == .physicsSlider,
                                 onActivate: { activeControl = .physicsSlider },
-                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader) },
+                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: true) },
                                 geometry: geometry,
                                 isDisabled: isExpanded
                             )
@@ -175,7 +175,7 @@ struct CardScrollView: View {
                                 color: .green,
                                 isActive: activeControl == .standardSlider,
                                 onActivate: { activeControl = .standardSlider },
-                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader) },
+                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader, useAnimation: false) },
                                 geometry: geometry,
                                 usesPhysics: false,
                                 isDisabled: isExpanded
@@ -403,9 +403,14 @@ struct CardScrollView: View {
         .disabled(isDisabled)
     }
     
-    // Scroll to a specific card
-    func scrollToCard(index: Int, proxy: ScrollViewProxy) {
-        withAnimation(.linear(duration: 0.01)) {
+    // Scroll to a specific card - with animation for physics slider, instant for standard slider
+    func scrollToCard(index: Int, proxy: ScrollViewProxy, useAnimation: Bool = false) {
+        if useAnimation {
+            withAnimation(.linear(duration: 0.01)) {
+                proxy.scrollTo(index, anchor: .center)
+            }
+        } else {
+            // No animation - instant jump
             proxy.scrollTo(index, anchor: .center)
         }
     }
