@@ -7,6 +7,9 @@
 
 import SwiftUI
 import AVKit
+import Combine
+
+// MARK: - Models
 
 struct MediaItem: Identifiable {
     let id = UUID()
@@ -19,44 +22,131 @@ struct MediaItem: Identifiable {
     }
 }
 
+// MARK: - View Models
+
+@Observable
+class MediaViewerModel {
+    // Media collection data
+    var mediaItems: [MediaItem] = []
+    var currentIndex: Int = 0
+    
+    // UI State
+    var isZoomed: Bool = false
+    var showControls: Bool = true
+    var isPlaying: Bool = false
+    
+    // Navigation State
+    var dragDirection: DragDirection = .none
+    var dragOffset: CGFloat = 0
+    var verticalDragOffset: CGFloat = 0
+    var dismissScale: CGFloat = 1.0
+    var dismissOpacity: CGFloat = 1.0
+    
+    // Zoom State
+    var scale: CGFloat = 1.0
+    var offset: CGSize = .zero
+    
+    // Settings
+    let dismissThreshold: CGFloat = 80
+    let controlsAutoHideDelay: Double = 3.0
+    let zoomRange: ClosedRange<CGFloat> = 1.0...4.0
+    
+    // Computed properties
+    var currentItem: MediaItem? {
+        guard !mediaItems.isEmpty, currentIndex >= 0, currentIndex < mediaItems.count else { 
+            return nil 
+        }
+        return mediaItems[currentIndex]
+    }
+    
+    var previousItem: MediaItem? {
+        guard currentIndex > 0, !mediaItems.isEmpty else { return nil }
+        return mediaItems[currentIndex - 1]
+    }
+    
+    var nextItem: MediaItem? {
+        guard currentIndex < mediaItems.count - 1, !mediaItems.isEmpty else { return nil }
+        return mediaItems[currentIndex + 1]
+    }
+    
+    // Behavior
+    var onDismiss: () -> Void = {}
+    
+    enum DragDirection {
+        case horizontal, vertical, none
+    }
+    
+    // Actions
+    func resetDragState() {
+        dragOffset = 0
+        verticalDragOffset = 0
+        dismissScale = 1.0
+        dismissOpacity = 1.0
+        dragDirection = .none
+    }
+    
+    func navigateToNextItem() {
+        guard currentIndex < mediaItems.count - 1 else { return }
+        currentIndex += 1
+        resetDragState()
+    }
+    
+    func navigateToPreviousItem() {
+        guard currentIndex > 0 else { return }
+        currentIndex -= 1
+        resetDragState()
+    }
+    
+    func resetZoom() {
+        scale = 1.0
+        offset = .zero
+        isZoomed = false
+    }
+    
+    func autoHideControls() {
+        guard showControls else { return }
+        
+        Task {
+            try? await Task.sleep(for: .seconds(controlsAutoHideDelay))
+            await MainActor.run {
+                // Only hide if conditions are still right for hiding
+                if !isZoomed && showControls && dragDirection == .none {
+                    showControls = false
+                }
+            }
+        }
+    }
+    
+    func toggleControls() {
+        showControls.toggle()
+        if showControls {
+            autoHideControls()
+        }
+    }
+}
+
 struct MediaViewer: View {
-    let startIndex: Int
-    let mediaItems: [MediaItem]
-    let onDismiss: () -> Void
-    
-    // Main state
-    @State private var currentIndex: Int
-    @State private var targetIndex: Int? = nil
-    @State private var isDragging = false
-    @State private var dragOffset: CGFloat = 0
-    @State private var verticalDragOffset: CGFloat = 0
-    @State private var dismissScale: CGFloat = 1.0
-    @State private var dismissOpacity: CGFloat = 1.0
-    
-    // UI state
-    @State private var showControls = true
-    @State private var isZoomed = false
-    
-    // Animation state
-    @State private var lastDragValue: DragGesture.Value?
-    
     // Environment
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
+    
+    // Model
+    @State private var model: MediaViewerModel
     
     // Haptics
     private let hapticLight = UIImpactFeedbackGenerator(style: .light)
     private let hapticMedium = UIImpactFeedbackGenerator(style: .medium)
     
-    // Settings
-    private let dismissThreshold: CGFloat = 80
-    private let controlsAutoHideDelay: Double = 3.0
+    // Track gesture state for calculations
+    @State private var lastDragValue: DragGesture.Value?
+    @State private var dragVelocity: CGFloat = 0
     
     init(startIndex: Int = 0, mediaItems: [MediaItem] = [], onDismiss: @escaping () -> Void) {
-        self.startIndex = startIndex
-        self.mediaItems = mediaItems
-        self.onDismiss = onDismiss
-        self._currentIndex = State(initialValue: startIndex)
+        let model = MediaViewerModel()
+        model.mediaItems = mediaItems
+        model.currentIndex = startIndex
+        model.onDismiss = onDismiss
+        self._model = State(initialValue: model)
     }
     
     var body: some View {
@@ -65,15 +155,15 @@ struct MediaViewer: View {
                 // Black background for the entire view
                 Color.black.ignoresSafeArea()
                 
-                if !mediaItems.isEmpty {
-                    // Media content with drag gesture
-                    mediaViewContent(geometry: geometry)
+                if !model.mediaItems.isEmpty, let currentItem = model.currentItem {
+                    // Media content with gesture handling
+                    mediaContent(geometry: geometry)
                     
-                    // Controls overlay - only shown when not dragging
+                    // Controls overlay with animation and opacity
                     controlsOverlay(geometry: geometry)
-                        .opacity(showControls ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.2), value: showControls)
-                        .opacity(1.0 - min(1.0, abs(verticalDragOffset / dismissThreshold) * 2.0))
+                        .opacity(model.showControls ? 1 : 0)
+                        .animation(.easeInOut(duration: 0.2), value: model.showControls)
+                        .opacity(1.0 - min(1.0, abs(model.verticalDragOffset / model.dismissThreshold) * 2.0))
                 } else {
                     // Empty state or loading
                     ProgressView()
@@ -85,38 +175,39 @@ struct MediaViewer: View {
             .statusBar(hidden: true)
             .onAppear {
                 prepareHaptics()
-                autoHideControls()
+                model.autoHideControls()
             }
             .onTapGesture {
-                toggleControls()
+                model.toggleControls()
             }
         }
     }
     
-    // Main content view with all gestures
-    private func mediaViewContent(geometry: GeometryProxy) -> some View {
+    // Main content container with all media items and gestures
+    @ViewBuilder
+    private func mediaContent(geometry: GeometryProxy) -> some View {
         ZStack {
-            // Current item
-            mediaItemView(for: currentIndex, geometry: geometry)
-                .offset(x: dragOffset, y: verticalDragOffset)
-                .scaleEffect(dismissScale)
-                .opacity(dismissOpacity)
+            // Current item view with transformations
+            mediaItemView(for: model.currentItem, geometry: geometry)
+                .offset(x: model.dragOffset, y: model.verticalDragOffset)
+                .scaleEffect(model.dismissScale)
+                .opacity(model.dismissOpacity)
             
-            // Preview previous item if dragging right
-            if dragOffset > 0 && currentIndex > 0 {
-                mediaItemView(for: currentIndex - 1, geometry: geometry)
-                    .offset(x: -geometry.size.width + dragOffset, y: 0)
+            // Previous item (preloaded when dragging right)
+            if model.dragOffset > 0, let previousItem = model.previousItem {
+                mediaItemView(for: previousItem, geometry: geometry)
+                    .offset(x: -geometry.size.width + model.dragOffset, y: 0)
             }
             
-            // Preview next item if dragging left
-            if dragOffset < 0 && currentIndex < mediaItems.count - 1 {
-                mediaItemView(for: currentIndex + 1, geometry: geometry)
-                    .offset(x: geometry.size.width + dragOffset, y: 0)
+            // Next item (preloaded when dragging left)
+            if model.dragOffset < 0, let nextItem = model.nextItem {
+                mediaItemView(for: nextItem, geometry: geometry)
+                    .offset(x: geometry.size.width + model.dragOffset, y: 0)
             }
         }
         .contentShape(Rectangle())
-        .highPriorityGesture(
-            DragGesture()
+        .gesture(
+            DragGesture(minimumDistance: 5)
                 .onChanged { value in
                     handleDragChanged(value: value, geometry: geometry)
                 }
@@ -124,185 +215,170 @@ struct MediaViewer: View {
                     handleDragEnded(value: value, geometry: geometry)
                 }
         )
-        .onTapGesture {
-            // Handle tap gestures separately to avoid conflicts
-            toggleControls()
-        }
     }
     
-    // Process drag gesture changes
+    // Handle drag gesture changes
     private func handleDragChanged(value: DragGesture.Value, geometry: GeometryProxy) {
-        if isZoomed { return } // Don't handle parent drags when zoomed
+        // Don't handle parent drags when zoomed
+        if model.isZoomed { return }
         
-        // First movement - determine direction
+        // First movement - determine drag direction
         if lastDragValue == nil {
             if abs(value.translation.width) > abs(value.translation.height) {
-                // Horizontal drag for paging
-                isDragging = true
+                model.dragDirection = .horizontal
             } else {
-                // Vertical drag for dismissal
-                isDragging = false
+                model.dragDirection = .vertical
             }
         }
         
-        if isDragging {
-            // Horizontal drag - update with resistance at boundaries
-            if (currentIndex == 0 && value.translation.width > 0) ||
-                (currentIndex == mediaItems.count - 1 && value.translation.width < 0) {
-                // Apply resistance at boundaries
-                dragOffset = value.translation.width * 0.4
-            } else {
-                dragOffset = value.translation.width
+        // Calculate drag velocity for predictive animations
+        if let lastValue = lastDragValue {
+            let timeDelta = value.time.timeIntervalSince(lastValue.time)
+            if timeDelta > 0 {
+                let xDelta = value.translation.width - lastValue.translation.width
+                dragVelocity = xDelta / CGFloat(timeDelta)
             }
-        } else {
-            // Vertical drag - handle dismissal gesture
-            verticalDragOffset = value.translation.height
+        }
+        
+        // Handle horizontal vs vertical dragging
+        switch model.dragDirection {
+        case .horizontal:
+            // Apply resistance at boundaries
+            if (model.currentIndex == 0 && value.translation.width > 0) ||
+               (model.currentIndex == model.mediaItems.count - 1 && value.translation.width < 0) {
+                model.dragOffset = value.translation.width * 0.4  // More resistance at boundaries
+            } else {
+                model.dragOffset = value.translation.width
+            }
             
-            // Update scale and opacity for dismiss animation
-            if verticalDragOffset > 0 {
-                // Only add effects when dragging downward
-                dismissScale = max(0.85, 1.0 - verticalDragOffset / 1000)
-                dismissOpacity = max(0.5, 1.0 - verticalDragOffset / 500)
+        case .vertical:
+            model.verticalDragOffset = value.translation.height
+            
+            // Update scale and opacity for dismiss animation (only when dragging downward)
+            if model.verticalDragOffset > 0 {
+                model.dismissScale = max(0.85, 1.0 - model.verticalDragOffset / 1000)
+                model.dismissOpacity = max(0.5, 1.0 - model.verticalDragOffset / 500)
                 
-                // Hide controls during dismiss gesture
-                if verticalDragOffset > 50 && showControls {
-                    showControls = false
+                // Auto-hide controls during dismiss gesture
+                if model.verticalDragOffset > 50 && model.showControls {
+                    model.showControls = false
                 }
             }
+            
+        case .none:
+            break
         }
         
         lastDragValue = value
     }
     
-    // Process drag gesture ending
+    // Handle drag gesture ending
     private func handleDragEnded(value: DragGesture.Value, geometry: GeometryProxy) {
-        if isDragging {
-            // Handle horizontal drag (navigation between items)
-            let velocity = calculateVelocity(value: value)
+        switch model.dragDirection {
+        case .horizontal:
+            // Navigation between media items
             let swipeThreshold = geometry.size.width * 0.3
-            let significantSwipe = abs(dragOffset) > swipeThreshold || abs(velocity) > 0.5
+            let significantSwipe = abs(model.dragOffset) > swipeThreshold || abs(dragVelocity) > 500
             
-            if dragOffset < 0 && significantSwipe && currentIndex < mediaItems.count - 1 {
-                // Next item
-                navigateToNextItem(geometry: geometry)
-            } else if dragOffset > 0 && significantSwipe && currentIndex > 0 {
-                // Previous item
-                navigateToPreviousItem(geometry: geometry)
-            } else {
-                // Not enough to change - snap back
-                cancelNavigation()
-            }
-        } else {
-            // Handle vertical drag (dismiss gesture)
-            if verticalDragOffset > dismissThreshold || value.velocity.height > 300 {
-                // Dismiss the viewer
-                withAnimation(.easeOut(duration: 0.2)) {
-                    verticalDragOffset = geometry.size.height
-                    dismissScale = 0.5
-                    dismissOpacity = 0
+            if model.dragOffset < 0 && significantSwipe && model.currentIndex < model.mediaItems.count - 1 {
+                // Navigate to next item with animation
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    model.dragOffset = -geometry.size.width
                 }
                 
-                // Haptic feedback
+                hapticLight.impactOccurred()
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    model.navigateToNextItem()
+                }
+            } else if model.dragOffset > 0 && significantSwipe && model.currentIndex > 0 {
+                // Navigate to previous item with animation
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    model.dragOffset = geometry.size.width
+                }
+                
+                hapticLight.impactOccurred()
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    model.navigateToPreviousItem()
+                }
+            } else {
+                // Not enough to change - snap back
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    model.dragOffset = 0
+                }
+            }
+            
+        case .vertical:
+            // Dismiss gesture
+            if model.verticalDragOffset > model.dismissThreshold || value.velocity.height > 300 {
+                // Dismiss the viewer with animation
+                withAnimation(.easeOut(duration: 0.2)) {
+                    model.verticalDragOffset = geometry.size.height
+                    model.dismissScale = 0.5
+                    model.dismissOpacity = 0
+                }
+                
                 hapticMedium.impactOccurred()
                 
                 // Dismiss after animation completes
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    onDismiss()
+                    model.onDismiss()
                 }
             } else {
                 // Not enough to dismiss - snap back
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                    verticalDragOffset = 0
-                    dismissScale = 1.0
-                    dismissOpacity = 1.0
+                    model.verticalDragOffset = 0
+                    model.dismissScale = 1.0
+                    model.dismissOpacity = 1.0
                 }
                 
-                // Show controls again if they were hidden
-                if !showControls {
+                // Restore controls if they were hidden
+                if !model.showControls {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         withAnimation {
-                            showControls = true
+                            model.showControls = true
                         }
                     }
                 }
             }
+            
+        case .none:
+            break
         }
         
+        // Reset tracking state
         lastDragValue = nil
+        dragVelocity = 0
+        model.dragDirection = .none
     }
     
-    // Navigate to next item with animation
-    private func navigateToNextItem(geometry: GeometryProxy) {
-        targetIndex = currentIndex + 1
-        hapticLight.impactOccurred()
-        
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-            dragOffset = -geometry.size.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            currentIndex = targetIndex!
-            dragOffset = 0
-            targetIndex = nil
-            isDragging = false
-        }
-    }
-    
-    // Navigate to previous item with animation
-    private func navigateToPreviousItem(geometry: GeometryProxy) {
-        targetIndex = currentIndex - 1
-        hapticLight.impactOccurred()
-        
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-            dragOffset = geometry.size.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            currentIndex = targetIndex!
-            dragOffset = 0
-            targetIndex = nil
-            isDragging = false
-        }
-    }
-    
-    // Cancel navigation and reset position
-    private func cancelNavigation() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            dragOffset = 0
-        }
-        isDragging = false
-    }
-    
-    // Media item view builder
+    // Media item view builder - uses optional binding for safety
     @ViewBuilder
-    private func mediaItemView(for index: Int, geometry: GeometryProxy) -> some View {
-        let item = mediaItems[index]
-        
-        ZoomableMediaView(
-            item: item,
-            onZoomChanged: { isZoomed in
-                self.isZoomed = isZoomed
-                
-                // Hide controls when zoomed
-                if isZoomed && showControls {
-                    withAnimation {
-                        showControls = false
-                    }
-                }
-            }
-        )
-        .frame(width: geometry.size.width, height: geometry.size.height)
+    private func mediaItemView(for item: MediaItem?, geometry: GeometryProxy) -> some View {
+        if let item = item {
+            MediaItemView(
+                item: item, 
+                model: model,
+                geometry: geometry
+            )
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        } else {
+            // Fallback for no item
+            Color.black
+                .frame(width: geometry.size.width, height: geometry.size.height)
+        }
     }
     
     // Controls overlay view
     @ViewBuilder
     private func controlsOverlay(geometry: GeometryProxy) -> some View {
         VStack(spacing: 0) {
-            // Top controls bar with gradient background
+            // Top controls with gradient background
             VStack {
                 HStack {
                     // Close button
-                    Button(action: onDismiss) {
+                    Button(action: model.onDismiss) {
                         Image(systemName: "xmark")
                             .font(.system(size: 20, weight: .bold))
                             .foregroundColor(.white)
@@ -313,8 +389,8 @@ struct MediaViewer: View {
                     Spacer()
                     
                     // Page indicator
-                    if mediaItems.count > 1 {
-                        Text("\(currentIndex + 1) / \(mediaItems.count)")
+                    if model.mediaItems.count > 1 {
+                        Text("\(model.currentIndex + 1) / \(model.mediaItems.count)")
                             .foregroundColor(.white)
                             .font(.system(size: 16, weight: .medium))
                             .padding(.vertical, 6)
@@ -326,7 +402,7 @@ struct MediaViewer: View {
                     
                     // Share button (placeholder)
                     Button {
-                        // Share functionality would go here
+                        // Share functionality
                     } label: {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 20, weight: .bold))
@@ -354,199 +430,139 @@ struct MediaViewer: View {
         .edgesIgnoringSafeArea(.all)
     }
     
-    // Calculate velocity for swipe gestures
-    private func calculateVelocity(value: DragGesture.Value) -> CGFloat {
-        guard let lastValue = lastDragValue else { return 0 }
-        
-        let timeDifference = value.time.timeIntervalSince(lastValue.time)
-        if timeDifference > 0 {
-            let distance = value.translation.width - lastValue.translation.width
-            return distance / CGFloat(timeDifference)
-        }
-        
-        return 0
-    }
-    
     // Prepare haptics for better performance
     private func prepareHaptics() {
         hapticLight.prepare()
         hapticMedium.prepare()
     }
-    
-    // Auto-hide controls after delay
-    private func autoHideControls() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + controlsAutoHideDelay) {
-            if !isDragging && !isZoomed && showControls {
-                withAnimation {
-                    showControls = false
-                }
-            }
-        }
-    }
-    
-    // Toggle controls visibility with timers
-    private func toggleControls() {
-        withAnimation {
-            showControls.toggle()
-        }
-        
-        // Auto-hide again after delay
-        if showControls {
-            autoHideControls()
-        }
-    }
 }
+    
+// MARK: - Media Item View
 
-// MARK: - Zoomable Media View
-
-struct ZoomableMediaView: View {
+struct MediaItemView: View {
     let item: MediaItem
-    let onZoomChanged: (Bool) -> Void
+    @Bindable var model: MediaViewerModel
+    let geometry: GeometryProxy
     
-    // Zoom state
-    @State private var scale: CGFloat = 1.0
+    // Local state for zooming
     @State private var lastScale: CGFloat = 1.0
-    @State private var offset = CGSize.zero
-    @State private var lastOffset = CGSize.zero
-    @State private var pinchStartLocation: CGPoint?
+    @State private var lastOffset: CGSize = .zero
     
-    // Settings
-    private let minScale: CGFloat = 1.0
-    private let maxScale: CGFloat = 4.0
-    private let zoomAnimationDuration: Double = 0.3
-    
-    // Haptics
+    // Haptic feedback
     private let haptic = UIImpactFeedbackGenerator(style: .light)
     
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Media content based on type
-                Group {
-                    if item.type == .image {
-                        ImageViewer(url: item.url)
-                            .scaleEffect(scale)
-                            .offset(offset)
-                    } else {
-                        VideoPlayerView(item: item)
-                    }
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                
-                // Only add gesture overlay when zoomed, to avoid interfering with parent gestures
-                if scale > 1.05 {
-                    // Invisible overlay for gestures when zoomed
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    handleDragChanged(value: value)
-                                }
-                                .onEnded { value in
-                                    handleDragEnded(value: value, geometry: geometry)
-                                }
-                        )
+        ZStack {
+            // Content based on media type
+            Group {
+                if item.type == .image {
+                    ImageView(url: item.url)
+                        .scaleEffect(model.scale)
+                        .offset(model.offset)
+                        .gesture(getZoomGesture())
+                } else {
+                    VideoView(item: item, showControls: $model.showControls)
                 }
             }
-            // These gestures apply regardless of zoom state
-            .gesture(
-                // Magnification (pinch) gesture for zooming
-                MagnificationGesture()
-                    .onChanged { value in
-                        handlePinchChanged(value: value)
-                    }
-                    .onEnded { _ in
-                        handlePinchEnded(geometry: geometry)
-                    }
-            )
-            .onTapGesture(count: 2) { location in
-                handleDoubleTap(location: location, geometry: geometry)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            
+            // Add pan gesture for zoomed state
+            if model.isZoomed {
+                // Invisible overlay for gesture handling when zoomed
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(getPanGesture())
             }
+        }
+        .onTapGesture(count: 2) { location in
+            handleDoubleTap(location: location)
         }
         .onAppear {
             haptic.prepare()
         }
     }
     
-    // Handle pinch gesture changes
-    private func handlePinchChanged(value: MagnificationGesture.Value) {
-        let delta = value / lastScale
-        lastScale = value
-        
-        // Apply zoom with spring-like resistance at extremes
-        let newScale = scale * delta
-        if newScale <= minScale {
-            scale = minScale + (newScale - minScale) * 0.2
-        } else if newScale >= maxScale {
-            scale = maxScale + (newScale - maxScale) * 0.2
-        } else {
-            scale = newScale
-        }
-        
-        // Notify parent about zoom state
-        onZoomChanged(scale > 1.05)
-    }
+    // MARK: - Gestures
     
-    // Handle pinch gesture ending
-    private func handlePinchEnded(geometry: GeometryProxy) {
-        lastScale = 1.0
-        
-        // Snap back if out of bounds or almost back to minimum
-        if scale < minScale + 0.2 {
-            withAnimation(.spring(response: zoomAnimationDuration, dampingFraction: 0.7)) {
-                scale = minScale
-                offset = .zero
-                lastOffset = .zero
+    // Zoom (pinch) gesture
+    private func getZoomGesture() -> some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                let delta = value / lastScale
+                lastScale = value
+                
+                // Apply zoom with bounce effect at extremes
+                let newScale = model.scale * delta
+                if newScale <= model.zoomRange.lowerBound {
+                    model.scale = model.zoomRange.lowerBound + (newScale - model.zoomRange.lowerBound) * 0.2
+                } else if newScale >= model.zoomRange.upperBound {
+                    model.scale = model.zoomRange.upperBound + (newScale - model.zoomRange.upperBound) * 0.2
+                } else {
+                    model.scale = newScale
+                }
+                
+                // Update zoom state
+                model.isZoomed = model.scale > 1.05
+                
+                // Hide controls when zoomed
+                if model.isZoomed && model.showControls {
+                    withAnimation {
+                        model.showControls = false
+                    }
+                }
             }
-            onZoomChanged(false)
-        } else if scale > maxScale - 0.2 {
-            withAnimation(.spring(response: zoomAnimationDuration, dampingFraction: 0.7)) {
-                scale = maxScale
+            .onEnded { _ in
+                lastScale = 1.0
+                
+                // Snap back to bounds if needed
+                if model.scale < model.zoomRange.lowerBound + 0.2 {
+                    withAnimation(.spring()) {
+                        model.resetZoom()
+                    }
+                } else if model.scale > model.zoomRange.upperBound - 0.2 {
+                    withAnimation(.spring()) {
+                        model.scale = model.zoomRange.upperBound
+                    }
+                }
+                
+                // Constrain the offset
+                constrainOffset()
             }
-        }
-        
-        // Constrain offset after scale change
-        constrainOffset(geometry: geometry)
     }
     
-    // Handle drag gesture changes
-    private func handleDragChanged(value: DragGesture.Value) {
-        // Only allow panning when zoomed in
-        if scale > 1.05 {
-            offset = CGSize(
-                width: lastOffset.width + value.translation.width,
-                height: lastOffset.height + value.translation.height
-            )
-        }
+    // Pan gesture for moving image when zoomed
+    private func getPanGesture() -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                // Only allow panning when zoomed in
+                if model.isZoomed {
+                    model.offset = CGSize(
+                        width: lastOffset.width + value.translation.width,
+                        height: lastOffset.height + value.translation.height
+                    )
+                }
+            }
+            .onEnded { _ in
+                lastOffset = model.offset
+                constrainOffset()
+            }
     }
     
-    // Handle drag gesture ending
-    private func handleDragEnded(value: DragGesture.Value, geometry: GeometryProxy) {
-        // Only handle for zoomed state
-        if scale > 1.05 {
-            lastOffset = offset
-            constrainOffset(geometry: geometry)
-        }
-    }
-    
-    // Handle double tap to zoom
-    private func handleDoubleTap(location: CGPoint, geometry: GeometryProxy) {
-        // Double tap to zoom in/out with haptic feedback
+    // Double tap to zoom in/out
+    private func handleDoubleTap(location: CGPoint) {
         haptic.impactOccurred()
         
-        if scale > 1.05 {
+        if model.isZoomed {
             // Zoom out
-            withAnimation(.spring(response: zoomAnimationDuration, dampingFraction: 0.7)) {
-                scale = 1.0
-                offset = .zero
-                lastOffset = .zero
+            withAnimation(.spring()) {
+                model.resetZoom()
             }
-            onZoomChanged(false)
         } else {
             // Zoom in centered on tap location
-            withAnimation(.spring(response: zoomAnimationDuration, dampingFraction: 0.7)) {
-                scale = 2.5
+            withAnimation(.spring()) {
+                model.scale = 2.5
+                model.isZoomed = true
                 
                 // Center on tap location
                 let tapPoint = CGPoint(
@@ -554,34 +570,33 @@ struct ZoomableMediaView: View {
                     y: location.y - geometry.size.height/2
                 )
                 
-                offset = CGSize(
+                model.offset = CGSize(
                     width: -tapPoint.x,
                     height: -tapPoint.y
                 )
-                lastOffset = offset
+                lastOffset = model.offset
             }
-            onZoomChanged(true)
         }
     }
     
-    // Constrain offset after zoom changes to keep content visible
-    private func constrainOffset(geometry: GeometryProxy) {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+    // Constrain offset to keep the image in view
+    private func constrainOffset() {
+        withAnimation(.spring()) {
             // Calculate max offset based on scaled size
-            let maxOffsetWidth = max(0, (geometry.size.width * (scale - 1)) / 2)
-            let maxOffsetHeight = max(0, (geometry.size.height * (scale - 1)) / 2)
+            let maxOffsetWidth = max(0, (geometry.size.width * (model.scale - 1)) / 2)
+            let maxOffsetHeight = max(0, (geometry.size.height * (model.scale - 1)) / 2)
             
             // Constrain offset to keep image visible
-            offset.width = min(maxOffsetWidth, max(-maxOffsetWidth, offset.width))
-            offset.height = min(maxOffsetHeight, max(-maxOffsetHeight, offset.height))
-            lastOffset = offset
+            model.offset.width = min(maxOffsetWidth, max(-maxOffsetWidth, model.offset.width))
+            model.offset.height = min(maxOffsetHeight, max(-maxOffsetHeight, model.offset.height))
+            lastOffset = model.offset
         }
     }
 }
 
-// MARK: - Image Viewer
+// MARK: - Image View
 
-struct ImageViewer: View {
+struct ImageView: View {
     let url: URL
     
     // Loading state
@@ -648,15 +663,15 @@ struct ImageViewer: View {
     }
 }
 
-// MARK: - Video Player View
+// MARK: - Video View
 
-struct VideoPlayerView: View {
+struct VideoView: View {
     let item: MediaItem
+    @Binding var showControls: Bool
     
-    // Player state
+    // Video player state
     @State private var player: AVPlayer
     @State private var isPlaying = false
-    @State private var showControls = true
     @State private var currentTime: Double = 0
     @State private var duration: Double = 0
     @State private var isScrubbing = false
@@ -665,16 +680,17 @@ struct VideoPlayerView: View {
     // Time observer token
     @State private var timeObserverToken: Any?
     
-    init(item: MediaItem) {
+    init(item: MediaItem, showControls: Binding<Bool>) {
         self.item = item
-        _player = State(initialValue: AVPlayer(url: item.url))
+        self._showControls = showControls
+        self._player = State(initialValue: AVPlayer(url: item.url))
     }
     
     var body: some View {
         ZStack {
             // Video player
             VideoPlayer(player: player)
-                .ignoresSafeArea(.all)
+                .ignoresSafeArea()
                 .disabled(showControls) // Prevent default tap handler
                 .onAppear {
                     setupPlayer()
@@ -692,7 +708,7 @@ struct VideoPlayerView: View {
                     .ignoresSafeArea()
             }
             
-            // Custom overlay controls
+            // Custom overlay controls when showing controls
             if showControls {
                 videoControlsOverlay
                     .transition(.opacity)
@@ -722,7 +738,7 @@ struct VideoPlayerView: View {
                         .fill(Color.white)
                         .frame(width: (currentTime / max(duration, 1)) * UIScreen.main.bounds.width - 32, height: 4)
                     
-                    // Thumb for scrubbing
+                    // Draggable thumb
                     Circle()
                         .fill(Color.white)
                         .frame(width: 12, height: 12)
@@ -794,7 +810,7 @@ struct VideoPlayerView: View {
                 )
             )
         }
-        .ignoresSafeArea(.all)
+        .ignoresSafeArea()
     }
     
     // Toggle play/pause
@@ -813,10 +829,20 @@ struct VideoPlayerView: View {
             showControls.toggle()
         }
         
-        // Auto-hide after delay
+        // Auto-hide controls after delay
         if showControls {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                if !isScrubbing {
+            autoHideControls()
+        }
+    }
+    
+    // Auto-hide controls after delay
+    private func autoHideControls() {
+        guard showControls else { return }
+        
+        Task {
+            try? await Task.sleep(for: .seconds(3.0))
+            if !isScrubbing && showControls {
+                await MainActor.run {
                     withAnimation {
                         showControls = false
                     }
@@ -825,12 +851,12 @@ struct VideoPlayerView: View {
         }
     }
     
-    // Set up the player and observers
+    // Set up player and observers
     private func setupPlayer() {
         // Generate thumbnail for initial display
         generateThumbnail()
         
-        // Add time observer
+        // Add time observer for progress updates
         let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
             if !isScrubbing {
@@ -838,12 +864,12 @@ struct VideoPlayerView: View {
             }
         }
         
-        // Get duration
+        // Get duration when available
         if let playerItem = player.currentItem {
             // Try to get duration directly if available
             duration = playerItem.duration.seconds
             
-            // Listen for when duration becomes available
+            // Listen for when playback completes
             NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: playerItem,
@@ -870,14 +896,10 @@ struct VideoPlayerView: View {
         isPlaying = true
         
         // Auto-hide controls after delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            withAnimation {
-                showControls = false
-            }
-        }
+        autoHideControls()
     }
     
-    // Clean up resources
+    // Clean up player resources
     private func cleanup() {
         // Remove time observer
         if let token = timeObserverToken {
@@ -890,52 +912,20 @@ struct VideoPlayerView: View {
         player.replaceCurrentItem(with: nil)
         
         // Remove notification observers
-        NotificationCenter.default.removeObserver(
-            self,
-            name: .AVPlayerItemDidPlayToEndTime,
-            object: nil
-        )
-        
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSNotification.Name.AVPlayerItemNewAccessLogEntry,
-            object: nil
-        )
+        NotificationCenter.default.removeObserver(self)
     }
     
-    // Generate thumbnail for video preview
+    // Generate thumbnail for preview
     private func generateThumbnail() {
-        // Use AVURLAsset instead of AVAsset(url:) for iOS 18 compatibility
         let asset = AVURLAsset(url: item.url)
         let imageGenerator = AVAssetImageGenerator(asset: asset)
         imageGenerator.appliesPreferredTrackTransform = true
         
-        // Use the new async method for iOS 18 compatibility
-        if #available(iOS 18.0, *) {
-            // Use the new asynchronous API
-            let time = CMTime(seconds: 1, preferredTimescale: 60)
-            // No need for a variable capture as Swift structs don't need weak references
-            
-            imageGenerator.generateCGImageAsynchronously(for: time) { cgImage, actualTime, error in
-                if let cgImage = cgImage {
-                    DispatchQueue.main.async {
-                        // Update the property on the main thread
-                        self.thumbnailImage = UIImage(cgImage: cgImage)
-                    }
-                }
-            }
-        } else {
-            // Use the deprecated synchronous API for older iOS versions
-            do {
-                #if compiler(>=5.9)
-                @preconcurrency let cgImage = try imageGenerator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 60), actualTime: nil)
-                #else
-                let cgImage = try imageGenerator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 60), actualTime: nil)
-                #endif
-                thumbnailImage = UIImage(cgImage: cgImage)
-            } catch {
-                print("Error generating thumbnail: \(error)")
-            }
+        do {
+            let cgImage = try imageGenerator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 60), actualTime: nil)
+            thumbnailImage = UIImage(cgImage: cgImage)
+        } catch {
+            print("Error generating thumbnail: \(error)")
         }
     }
     

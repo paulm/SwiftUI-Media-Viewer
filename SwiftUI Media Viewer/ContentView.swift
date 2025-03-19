@@ -72,59 +72,21 @@ struct ContentView: View {
         }
     }
     
-    // Load media items for the grid
+    // Load sample media items from Preview Content folder
     private func loadMediaItems() {
         let fileManager = FileManager.default
         var mediaItems: [MediaItem] = []
         
-        // Try different potential locations for the Media folder
-        var searchLocations: [URL] = []
-        
-        // 1. Check the app bundle
-        if let bundleURL = Bundle.main.resourceURL {
-            searchLocations.append(bundleURL)
-            searchLocations.append(bundleURL.appendingPathComponent("Media"))
-        }
-        
-        // 2. Check the Documents directory
-        if let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            searchLocations.append(docURL.appendingPathComponent("Media"))
-        }
-        
-        // Look for media in all search locations
-        for location in searchLocations {
+        // Search in Preview Content folder first
+        if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Preview Content") {
             do {
                 let contents = try fileManager.contentsOfDirectory(
-                    at: location,
+                    at: bundleURL,
                     includingPropertiesForKeys: nil
                 )
                 
                 for url in contents {
                     let pathExtension = url.pathExtension.lowercased()
-                    
-                    // Check if it's a directory (might be the Media folder)
-                    var isDir: ObjCBool = false
-                    if fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue {
-                        if url.lastPathComponent == "Media" {
-                            do {
-                                let mediaFiles = try fileManager.contentsOfDirectory(
-                                    at: url,
-                                    includingPropertiesForKeys: nil
-                                )
-                                for mediaFile in mediaFiles {
-                                    let mediaExt = mediaFile.pathExtension.lowercased()
-                                    if ["jpg", "jpeg", "png", "gif"].contains(mediaExt) {
-                                        mediaItems.append(MediaItem(url: mediaFile, type: .image))
-                                    } else if ["mp4", "mov"].contains(mediaExt) {
-                                        mediaItems.append(MediaItem(url: mediaFile, type: .video))
-                                    }
-                                }
-                            } catch {
-                                print("Error reading Media directory: \(error)")
-                            }
-                        }
-                        continue
-                    }
                     
                     // Process individual files
                     if ["jpg", "jpeg", "png", "gif"].contains(pathExtension) {
@@ -134,7 +96,71 @@ struct ContentView: View {
                     }
                 }
             } catch {
-                print("Error accessing directory \(location.path): \(error)")
+                print("Error accessing Preview Content directory: \(error)")
+            }
+        }
+        
+        // If no media files found in Preview Content, try other locations
+        if mediaItems.isEmpty {
+            // Try different potential locations for the Media folder
+            var searchLocations: [URL] = []
+            
+            // 1. Check the app bundle
+            if let bundleURL = Bundle.main.resourceURL {
+                searchLocations.append(bundleURL)
+                searchLocations.append(bundleURL.appendingPathComponent("Media"))
+            }
+            
+            // 2. Check the Documents directory
+            if let docURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+                searchLocations.append(docURL.appendingPathComponent("Media"))
+            }
+            
+            // Look for media in all search locations
+            for location in searchLocations {
+                do {
+                    let contents = try fileManager.contentsOfDirectory(
+                        at: location,
+                        includingPropertiesForKeys: nil
+                    )
+                    
+                    for url in contents {
+                        let pathExtension = url.pathExtension.lowercased()
+                        
+                        // Check if it's a directory (might be the Media folder)
+                        var isDir: ObjCBool = false
+                        if fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue {
+                            if url.lastPathComponent == "Media" {
+                                do {
+                                    let mediaFiles = try fileManager.contentsOfDirectory(
+                                        at: url,
+                                        includingPropertiesForKeys: nil
+                                    )
+                                    for mediaFile in mediaFiles {
+                                        let mediaExt = mediaFile.pathExtension.lowercased()
+                                        if ["jpg", "jpeg", "png", "gif"].contains(mediaExt) {
+                                            mediaItems.append(MediaItem(url: mediaFile, type: .image))
+                                        } else if ["mp4", "mov"].contains(mediaExt) {
+                                            mediaItems.append(MediaItem(url: mediaFile, type: .video))
+                                        }
+                                    }
+                                } catch {
+                                    print("Error reading Media directory: \(error)")
+                                }
+                            }
+                            continue
+                        }
+                        
+                        // Process individual files
+                        if ["jpg", "jpeg", "png", "gif"].contains(pathExtension) {
+                            mediaItems.append(MediaItem(url: url, type: .image))
+                        } else if ["mp4", "mov"].contains(pathExtension) {
+                            mediaItems.append(MediaItem(url: url, type: .video))
+                        }
+                    }
+                } catch {
+                    print("Error accessing directory \(location.path): \(error)")
+                }
             }
         }
         
@@ -191,7 +217,7 @@ struct MediaThumbnail: View {
                             }
                         }
                     } else {
-                        // Video thumbnail (just show icon)
+                        // Video thumbnail with icon
                         ZStack {
                             Rectangle()
                                 .fill(Color(UIColor.systemGray5))
