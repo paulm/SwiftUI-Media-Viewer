@@ -41,6 +41,7 @@ class MediaViewerModel {
     var verticalDragOffset: CGFloat = 0
     var dismissScale: CGFloat = 1.0
     var dismissOpacity: CGFloat = 1.0
+    var isDragging: Bool = false  // Track active dragging state
     
     // Zoom State
     var scale: CGFloat = 1.0
@@ -110,7 +111,7 @@ class MediaViewerModel {
             try? await Task.sleep(for: .seconds(controlsAutoHideDelay))
             await MainActor.run {
                 // Only hide if conditions are still right for hiding
-                if !isZoomed && showControls && dragDirection == .none {
+                if !isZoomed && showControls && dragDirection == .none && !isDragging {
                     showControls = false
                 }
             }
@@ -177,9 +178,15 @@ struct MediaViewer: View {
                 prepareHaptics()
                 model.autoHideControls()
             }
-            .onTapGesture {
-                model.toggleControls()
-            }
+            // Only toggle controls when not actively dragging to avoid conflicts
+            .simultaneousGesture(
+                TapGesture()
+                    .onEnded { _ in
+                        if !model.isDragging {
+                            model.toggleControls()
+                        }
+                    }
+            )
         }
     }
     
@@ -187,29 +194,61 @@ struct MediaViewer: View {
     @ViewBuilder
     private func mediaContent(geometry: GeometryProxy) -> some View {
         ZStack {
-            // Current item view with transformations
-            mediaItemView(for: model.currentItem, geometry: geometry)
-                .offset(x: model.dragOffset, y: model.verticalDragOffset)
-                .scaleEffect(model.dismissScale)
-                .opacity(model.dismissOpacity)
+            Color.black
+                .ignoresSafeArea()
             
-            // Previous item (preloaded when dragging right)
-            if model.dragOffset > 0, let previousItem = model.previousItem {
-                mediaItemView(for: previousItem, geometry: geometry)
-                    .offset(x: -geometry.size.width + model.dragOffset, y: 0)
+            // SIMPLE IMPLEMENTATION: Direct drag offset application
+            ZStack {
+                // Current item view with direct offset
+                mediaItemView(for: model.currentItem, geometry: geometry)
+                
+                // Previous item (preloaded when dragging right)
+                if model.dragOffset > 0, let previousItem = model.previousItem {
+                    mediaItemView(for: previousItem, geometry: geometry)
+                        .offset(x: -geometry.size.width)
+                }
+                
+                // Next item (preloaded when dragging left)
+                if model.dragOffset < 0, let nextItem = model.nextItem {
+                    mediaItemView(for: nextItem, geometry: geometry)
+                        .offset(x: geometry.size.width)
+                }
             }
-            
-            // Next item (preloaded when dragging left)
-            if model.dragOffset < 0, let nextItem = model.nextItem {
-                mediaItemView(for: nextItem, geometry: geometry)
-                    .offset(x: geometry.size.width + model.dragOffset, y: 0)
-            }
+            .offset(x: model.dragOffset, y: model.verticalDragOffset) // Direct drag translation
+            .scaleEffect(model.dismissScale)
+            .opacity(model.dismissOpacity)
         }
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 5)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0.1) // Extremely low threshold for immediate response
                 .onChanged { value in
-                    handleDragChanged(value: value, geometry: geometry)
+                    // Immediately set isDragging state on first movement
+                    model.isDragging = true
+                    
+                    // Direct assignment of translation with absolutely no filtering
+                    // This ensures 1:1 movement with your finger
+                    model.dragOffset = value.translation.width
+                    model.verticalDragOffset = value.translation.height
+                    
+                    // Simple scale and opacity effects
+                    let dragDistance = sqrt(pow(value.translation.width, 2) + pow(value.translation.height, 2))
+                    model.dismissScale = max(0.9, 1.0 - dragDistance / 2000)
+                    model.dismissOpacity = max(0.7, 1.0 - dragDistance / 1000)
+                    
+                    // Hide controls immediately on drag
+                    if model.showControls {
+                        model.showControls = false
+                    }
+                    
+                    // Track dominant direction for end handling but don't restrict movement
+                    if abs(value.translation.width) > abs(value.translation.height) {
+                        model.dragDirection = .horizontal
+                    } else {
+                        model.dragDirection = .vertical
+                    }
+                    
+                    // Save for velocity calculation
+                    lastDragValue = value
                 }
                 .onEnded { value in
                     handleDragEnded(value: value, geometry: geometry)
@@ -217,152 +256,133 @@ struct MediaViewer: View {
         )
     }
     
-    // Handle drag gesture changes
-    private func handleDragChanged(value: DragGesture.Value, geometry: GeometryProxy) {
-        // Don't handle parent drags when zoomed
-        if model.isZoomed { return }
+    // Calculate velocity from last drag value
+    private func calculateVelocity(from value: DragGesture.Value) -> CGFloat {
+        guard let lastValue = lastDragValue else { return 0 }
         
-        // First movement - determine drag direction
-        if lastDragValue == nil {
-            if abs(value.translation.width) > abs(value.translation.height) {
-                model.dragDirection = .horizontal
-            } else {
-                model.dragDirection = .vertical
-            }
-        }
+        let timeDelta = value.time.timeIntervalSince(lastValue.time)
+        if timeDelta <= 0 { return 0 }
         
-        // Calculate drag velocity for predictive animations
-        if let lastValue = lastDragValue {
-            let timeDelta = value.time.timeIntervalSince(lastValue.time)
-            if timeDelta > 0 {
-                let xDelta = value.translation.width - lastValue.translation.width
-                dragVelocity = xDelta / CGFloat(timeDelta)
-            }
-        }
-        
-        // Handle horizontal vs vertical dragging
-        switch model.dragDirection {
-        case .horizontal:
-            // Apply resistance at boundaries
-            if (model.currentIndex == 0 && value.translation.width > 0) ||
-               (model.currentIndex == model.mediaItems.count - 1 && value.translation.width < 0) {
-                model.dragOffset = value.translation.width * 0.4  // More resistance at boundaries
-            } else {
-                model.dragOffset = value.translation.width
-            }
-            
-        case .vertical:
-            model.verticalDragOffset = value.translation.height
-            
-            // Update scale and opacity for dismiss animation (only when dragging downward)
-            if model.verticalDragOffset > 0 {
-                model.dismissScale = max(0.85, 1.0 - model.verticalDragOffset / 1000)
-                model.dismissOpacity = max(0.5, 1.0 - model.verticalDragOffset / 500)
-                
-                // Auto-hide controls during dismiss gesture
-                if model.verticalDragOffset > 50 && model.showControls {
-                    model.showControls = false
-                }
-            }
-            
-        case .none:
-            break
-        }
-        
-        lastDragValue = value
+        // Calculate overall velocity
+        let xDelta = value.translation.width - lastValue.translation.width
+        let yDelta = value.translation.height - lastValue.translation.height
+        return sqrt(pow(xDelta, 2) + pow(yDelta, 2)) / CGFloat(timeDelta)
     }
     
     // Handle drag gesture ending
     private func handleDragEnded(value: DragGesture.Value, geometry: GeometryProxy) {
-        switch model.dragDirection {
-        case .horizontal:
-            // Navigation between media items
-            let swipeThreshold = geometry.size.width * 0.3
-            let significantSwipe = abs(model.dragOffset) > swipeThreshold || abs(dragVelocity) > 500
+        // Calculate gestures metrics for animations
+        let dragDistance = sqrt(pow(model.dragOffset, 2) + pow(model.verticalDragOffset, 2))
+        let velocity = calculateVelocity(from: value)
+        let predictiveDistance = value.predictedEndLocation.x - value.location.x
+        let isPredictiveSwipe = abs(predictiveDistance) > geometry.size.width * 0.1
+        
+        // Thresholds - more forgiving with higher velocity
+        let velocityImpact = min(1.0, velocity / 500)
+        let horizontalThreshold = geometry.size.width * 0.25 * (1.0 - velocityImpact*0.5)
+        let verticalThreshold = model.dismissThreshold * (1.0 - velocityImpact*0.5)
+        
+        // CASE 1: Dismiss (vertical swipe)
+        if (model.dragDirection == .vertical && model.verticalDragOffset > verticalThreshold) ||
+           (model.verticalDragOffset > 120) {
             
-            if model.dragOffset < 0 && significantSwipe && model.currentIndex < model.mediaItems.count - 1 {
-                // Navigate to next item with animation
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    model.dragOffset = -geometry.size.width
-                }
-                
-                hapticLight.impactOccurred()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    model.navigateToNextItem()
-                }
-            } else if model.dragOffset > 0 && significantSwipe && model.currentIndex > 0 {
-                // Navigate to previous item with animation
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    model.dragOffset = geometry.size.width
-                }
-                
-                hapticLight.impactOccurred()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    model.navigateToPreviousItem()
-                }
-            } else {
-                // Not enough to change - snap back
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    model.dragOffset = 0
-                }
+            // Animation to dismiss
+            withAnimation(.easeOut(duration: 0.25)) {
+                model.verticalDragOffset = geometry.size.height
+                model.dismissScale = 0.5
+                model.dismissOpacity = 0
             }
             
-        case .vertical:
-            // Dismiss gesture
-            if model.verticalDragOffset > model.dismissThreshold || value.velocity.height > 300 {
-                // Dismiss the viewer with animation
-                withAnimation(.easeOut(duration: 0.2)) {
-                    model.verticalDragOffset = geometry.size.height
-                    model.dismissScale = 0.5
-                    model.dismissOpacity = 0
-                }
-                
-                hapticMedium.impactOccurred()
-                
-                // Dismiss after animation completes
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    model.onDismiss()
-                }
-            } else {
-                // Not enough to dismiss - snap back
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                    model.verticalDragOffset = 0
-                    model.dismissScale = 1.0
-                    model.dismissOpacity = 1.0
-                }
-                
-                // Restore controls if they were hidden
-                if !model.showControls {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        withAnimation {
-                            model.showControls = true
-                        }
+            hapticMedium.impactOccurred()
+            
+            // Dismiss after animation completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                model.onDismiss()
+            }
+            
+        // CASE 2: Next item (left swipe)
+        } else if (model.dragOffset < -horizontalThreshold || 
+                  (isPredictiveSwipe && predictiveDistance < 0)) && 
+                  model.currentIndex < model.mediaItems.count - 1 {
+            
+            // Animation to slide to next item
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                model.dragOffset = -geometry.size.width
+                model.verticalDragOffset = 0
+            }
+            
+            hapticLight.impactOccurred()
+            
+            // Navigate after animation completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                model.navigateToNextItem()
+            }
+            
+        // CASE 3: Previous item (right swipe)
+        } else if (model.dragOffset > horizontalThreshold || 
+                  (isPredictiveSwipe && predictiveDistance > 0)) && 
+                  model.currentIndex > 0 {
+            
+            // Animation to slide to previous item
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                model.dragOffset = geometry.size.width
+                model.verticalDragOffset = 0
+            }
+            
+            hapticLight.impactOccurred()
+            
+            // Navigate after animation completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                model.navigateToPreviousItem()
+            }
+            
+        // CASE 4: Not enough movement - bounce back with physics-like animation
+        } else {
+            // Calculate bounce parameters based on speed & distance
+            let speed = max(velocity / 800, dragDistance / 1000)
+            let springResponse = 0.3 + min(0.15, speed)
+            let springDampingFraction = 0.7 - min(0.25, speed) // Less damping = more bounce
+            
+            // Bounce-back animation
+            withAnimation(.spring(response: springResponse, 
+                                 dampingFraction: springDampingFraction, 
+                                 blendDuration: 0.2)) {
+                model.dragOffset = 0
+                model.verticalDragOffset = 0
+                model.dismissScale = 1.0
+                model.dismissOpacity = 1.0
+            }
+            
+            // Restore controls with slight delay
+            if !model.showControls {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation {
+                        model.showControls = true
                     }
                 }
             }
-            
-        case .none:
-            break
         }
         
-        // Reset tracking state
+        // Reset gesture tracking state
         lastDragValue = nil
         dragVelocity = 0
         model.dragDirection = .none
+        model.isDragging = false
     }
     
     // Media item view builder - uses optional binding for safety
     @ViewBuilder
     private func mediaItemView(for item: MediaItem?, geometry: GeometryProxy) -> some View {
         if let item = item {
+            // Disable gestures within the media item when parent is dragging
             MediaItemView(
                 item: item, 
                 model: model,
-                geometry: geometry
+                geometry: geometry,
+                allowGestures: !model.isDragging // Disable gestures when parent is dragging
             )
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .allowsHitTesting(!model.isDragging) // Critical for smooth parent dragging
         } else {
             // Fallback for no item
             Color.black
@@ -443,6 +463,7 @@ struct MediaItemView: View {
     let item: MediaItem
     @Bindable var model: MediaViewerModel
     let geometry: GeometryProxy
+    var allowGestures: Bool = true // New parameter to control gesture handling
     
     // Local state for zooming
     @State private var lastScale: CGFloat = 1.0
@@ -459,15 +480,15 @@ struct MediaItemView: View {
                     ImageView(url: item.url)
                         .scaleEffect(model.scale)
                         .offset(model.offset)
-                        .gesture(getZoomGesture())
+                        .gesture(allowGestures ? getZoomGesture() : nil)
                 } else {
                     VideoView(item: item, showControls: $model.showControls)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             
-            // Add pan gesture for zoomed state
-            if model.isZoomed {
+            // Add pan gesture for zoomed state only when gestures are allowed
+            if model.isZoomed && allowGestures {
                 // Invisible overlay for gesture handling when zoomed
                 Color.clear
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -476,7 +497,9 @@ struct MediaItemView: View {
             }
         }
         .onTapGesture(count: 2) { location in
-            handleDoubleTap(location: location)
+            if allowGestures {
+                handleDoubleTap(location: location)
+            }
         }
         .onAppear {
             haptic.prepare()
