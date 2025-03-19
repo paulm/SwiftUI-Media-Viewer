@@ -11,7 +11,7 @@ struct CardScrollView: View {
     var onDismiss: () -> Void
     
     // For tracking which card is centered
-    @State private var lastCenteredIndex: Int = -1
+    @State private var currentCardIndex: Int = 0
     
     // For haptic feedback
     private let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
@@ -23,23 +23,25 @@ struct CardScrollView: View {
     @State private var expandedCardIndex: Int? = nil
     @State private var isExpanded = false
     
-    // For natural card scrolling
-    @State private var targetCardIndex: Int = 0
-    @State private var displayCardIndex: Int = 0
-    @State private var animationActive = false
-    
-    // For slider control
-    @State private var sliderValue: Double = 0
-    @State private var initialSliderTouch: Double? = nil // Store initial touch position
+    // For scroll values
     @State private var scrollViewProxy: ScrollViewProxy? = nil
-    @State private var isUserDraggingCards = false // Track when user is directly dragging cards
     
-    // For slider physics
-    @State private var sliderDragVelocity: Double = 0
+    // Simple enum to track active control
+    enum ControlType {
+        case cards, physicsSlider, standardSlider
+    }
+    @State private var activeControl: ControlType = .cards
+    
+    // Slider values
+    @State private var physicsSliderValue: Double = 0
+    @State private var standardSliderValue: Double = 0
+    
+    // Physics properties
+    @State private var velocity: Double = 0
+    @State private var isDraggingPhysicsSlider = false
+    @State private var isAnimatingPhysicsSlider = false
     @State private var lastDragLocation: CGPoint? = nil
     @State private var lastDragTime: Date? = nil
-    @State private var isDraggingSlider = false
-    @State private var isAnimatingSlider = false
     
     // Total number of cards
     private let totalCards = 100
@@ -73,304 +75,357 @@ struct CardScrollView: View {
                 }
                 .zIndex(101) // Keep dismiss button on top
                 
-                // Cards with ScrollViewReader for programmatic scrolling
+                // Main content with ScrollViewReader for programmatic scrolling
                 ScrollViewReader { scrollViewReader in
                     VStack(spacing: 20) {
                         ZStack {
-                            // Regular card scrollview
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(0..<totalCards, id: \.self) { index in
-                                        cardView(for: index)
-                                            .frame(width: 100, height: 125) // 1/2 the original size
-                                            .id(index) // For scrollViewReader
-                                            .background(GeometryReader { geo in
-                                                Color.clear.onAppear {
-                                                    viewWidth = geometry.size.width
-                                                }
-                                                .onChange(of: geo.frame(in: .named("scrollView"))) { frame in
-                                                    if !isExpanded {
-                                                        checkIfCardIsCentered(frame: frame, index: index)
-                                                    }
-                                                }
-                                            })
-                                    }
-                                }
-                                .padding(.horizontal, (geometry.size.width - 100) / 2) // Adjusted for new width
-                                .simultaneousGesture(
-                                    DragGesture(minimumDistance: 5)
-                                        .onChanged { _ in
-                                            // User is directly interacting with cards
-                                            isUserDraggingCards = true
-                                            
-                                            // Ensure slider animation doesn't interfere
-                                            animationActive = false
-                                        }
-                                        .onEnded { _ in
-                                            // Reset after a delay
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                                isUserDraggingCards = false
-                                            }
-                                        }
-                                )
-                            }
-                            .coordinateSpace(name: "scrollView")
-                            .frame(height: geometry.size.height * 0.7) // Leave room for slider
-                            .allowsHitTesting(!isExpanded) // Disable scrolling when a card is expanded
+                            // Background
+                            Color.white
+                                .edgesIgnoringSafeArea(.all)
                             
-                            // Expanded card overlay - shown above everything when a card is expanded
-                            if isExpanded, let expandedIndex = expandedCardIndex {
-                                cardView(for: expandedIndex)
-                                    .frame(width: 100, height: 125)
-                                    .scaleEffect(3.5)
-                                    .zIndex(500) // Ensure it's above everything
+                            // Dimmed background when expanded
+                            if isExpanded {
+                                Color.black
+                                    .opacity(0.6)
+                                    .ignoresSafeArea()
                                     .onTapGesture {
                                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                             expandedCardIndex = nil
                                             isExpanded = false
                                         }
                                     }
+                                    .zIndex(90)
+                            }
+                            
+                            // Card scrollview
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 12) {
+                                    ForEach(0..<totalCards, id: \.self) { index in
+                                        cardView(for: index, isActive: index == currentCardIndex && !isExpanded)
+                                            .frame(width: 100, height: 125)
+                                            .id(index) // For scrollViewReader
+                                            .background(
+                                                GeometryReader { geo in
+                                                    Color.clear
+                                                        .onAppear {
+                                                            viewWidth = geometry.size.width
+                                                        }
+                                                        .onChange(of: geo.frame(in: .named("scrollView"))) { _, frame in
+                                                            if !isExpanded {
+                                                                checkIfCardIsCentered(frame: frame, index: index)
+                                                            }
+                                                        }
+                                                }
+                                            )
+                                    }
+                                }
+                                .padding(.horizontal, (geometry.size.width - 100) / 2)
+                                .opacity(isExpanded ? 0.4 : (activeControl == .cards ? 1.0 : 0.7))
+                                .saturation(activeControl == .cards ? 1.0 : 0.6)
+                            }
+                            .gesture(
+                                DragGesture(minimumDistance: 5)
+                                    .onChanged { _ in
+                                        activeControl = .cards
+                                    }
+                            )
+                            .coordinateSpace(name: "scrollView")
+                            .frame(height: geometry.size.height * 0.7)
+                            .allowsHitTesting(!isExpanded)
+                            .zIndex(1)
+                            
+                            // Expanded card overlay
+                            if isExpanded, let expandedIndex = expandedCardIndex {
+                                // Get position of the original card
+                                GeometryReader { geo in
+                                    // The expanded card
+                                    cardView(for: expandedIndex, isActive: false)
+                                        .frame(width: 300, height: 375) // 3x the original size
+                                        .shadow(radius: 10)
+                                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                                        .onTapGesture {
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                                expandedCardIndex = nil
+                                                isExpanded = false
+                                            }
+                                        }
+                                }
+                                .zIndex(100)
                             }
                         }
                         
-                        // Slider control with custom styling
-                        VStack(spacing: 4) {
-                            ZStack(alignment: .leading) {
-                                // Base slider
-                                Slider(value: $sliderValue, in: 0...Double(totalCards - 1))
-                                    .padding(.horizontal, 20)
-                                    .accentColor(.blue)
-                                    .onChange(of: sliderValue) { value in
-                                        // Update target index when slider changes
-                                        targetCardIndex = Int(value.rounded())
-                                        
-                                        // Only animate cards when slider is being directly manipulated
-                                        // This prevents interfering with normal scroll behavior
-                                        if !animationActive && (isDraggingSlider || isAnimatingSlider) {
-                                            animationActive = true
-                                            
-                                            // Begin natural animation timer
-                                            let startTime = Date()
-                                            let animationDuration = 0.35 // seconds
-                                            
-                                            // Create timer for smooth scrolling
-                                            let timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { timer in
-                                                let now = Date()
-                                                let elapsed = now.timeIntervalSince(startTime)
-                                                let progress = min(1.0, elapsed / animationDuration)
-                                                
-                                                // Apply easing curve (ease-out cubic)
-                                                let easedProgress = 1.0 - pow(1.0 - progress, 3)
-                                                
-                                                // Update scroll position with easing
-                                                withAnimation(.linear(duration: 0.01)) {
-                                                    scrollViewReader.scrollTo(targetCardIndex, anchor: .center)
-                                                }
-                                                
-                                                // End timer when animation completes
-                                                if progress >= 1.0 {
-                                                    timer.invalidate()
-                                                    animationActive = false
-                                                }
-                                            }
-                                            
-                                            RunLoop.current.add(timer, forMode: .common)
-                                        }
-                                    }
-                                    .disabled(isExpanded || isAnimatingSlider) // Disable slider during animations
-                                
-                                // Custom drag gesture overlay for physics
-                                Color.clear
-                                    .contentShape(Rectangle())
-                                    .padding(.horizontal, 20)
-                                    .frame(height: 44) // Make touch target larger
-                                    .gesture(
-                                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                            .onChanged { gesture in
-                                                // Store initial touch position to prevent jumps
-                                                if !isDraggingSlider {
-                                                    initialSliderTouch = sliderValue
-                                                }
-                                                
-                                                isDraggingSlider = true
-                                                isAnimatingSlider = false
-                                                
-                                                // Calculate drag distance from initial position
-                                                let dragAmount = gesture.location.x
-                                                let totalWidth = geometry.size.width - 40 // Adjust for padding
-                                                
-                                                if let initialValue = initialSliderTouch {
-                                                    // Calculate the delta movement
-                                                    let draggableRange = Double(totalCards - 1)
-                                                    let stepSize = draggableRange / Double(totalWidth)
-                                                    let dragDelta = Double(dragAmount - gesture.startLocation.x) * stepSize
-                                                    
-                                                    // Apply the delta to the initial value
-                                                    let newValue = initialValue + dragDelta
-                                                    sliderValue = max(0, min(draggableRange, newValue))
-                                                }
-                                                
-                                                // Calculate velocity for inertia
-                                                let now = Date()
-                                                if let lastLocation = lastDragLocation, let lastTime = lastDragTime {
-                                                    let dx = gesture.location.x - lastLocation.x
-                                                    let dt = now.timeIntervalSince(lastTime)
-                                                    if dt > 0 {
-                                                        sliderDragVelocity = Double(dx) / dt
-                                                    }
-                                                }
-                                                
-                                                lastDragLocation = gesture.location
-                                                lastDragTime = now
-                                            }
-                                            .onEnded { gesture in
-                                                isDraggingSlider = false
-                                                initialSliderTouch = nil
-                                                
-                                                // Apply inertia if velocity is significant
-                                                if abs(sliderDragVelocity) > 100 {
-                                                    isAnimatingSlider = true
-                                                    
-                                                    // Start a timer to animate the sliding effect
-                                                    let baseVelocity = sliderDragVelocity / 1000 // Scale down
-                                                    var lastUpdateTime = Date()
-                                                    
-                                                    // Define physics constants
-                                                    let friction = 0.94 // Higher values = less friction (0.94 feels more iOS-like)
-                                                    let minVelocity = 0.1
-                                                    
-                                                    // Apply initial velocity impact for better feel
-                                                    sliderDragVelocity *= 1.2 // Slightly amplify initial velocity for better effect
-                                                    
-                                                    // Create timer for physics animation
-                                                    let timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { timer in
-                                                        let now = Date()
-                                                        let dt = now.timeIntervalSince(lastUpdateTime)
-                                                        lastUpdateTime = now
-                                                        
-                                                        // Apply friction
-                                                        sliderDragVelocity *= pow(friction, dt * 60)
-                                                        
-                                                        // Stop when velocity is very low
-                                                        if abs(sliderDragVelocity) < minVelocity {
-                                                            timer.invalidate()
-                                                            isAnimatingSlider = false
-                                                            
-                                                            // When animation ends, apply a final settling animation
-                                                            let targetIndex = Int(sliderValue.rounded())
-                                                            
-                                                            // Start natural settling animation
-                                                            targetCardIndex = targetIndex
-                                                            animationActive = true
-                                                            
-                                                            // Update slider to match final position
-                                                            sliderValue = Double(targetIndex)
-                                                            
-                                                            // Use a timer for smooth animation with custom easing
-                                                            let startTime = Date()
-                                                            let animationDuration = 0.5 // seconds
-                                                            
-                                                            let settlingTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { timer in
-                                                                let now = Date()
-                                                                let elapsed = now.timeIntervalSince(startTime)
-                                                                let progress = min(1.0, elapsed / animationDuration)
-                                                                
-                                                                // Apply spring-like easing curve
-                                                                // This simulates a spring-like motion
-                                                                let t = progress
-                                                                let easedProgress = 1 - cos(t * .pi / 2)
-                                                                
-                                                                // Update scroll position with easing
-                                                                withAnimation(.linear(duration: 0.01)) {
-                                                                    scrollViewReader.scrollTo(targetIndex, anchor: .center)
-                                                                }
-                                                                
-                                                                // End timer when animation completes
-                                                                if progress >= 1.0 {
-                                                                    timer.invalidate()
-                                                                    animationActive = false
-                                                                }
-                                                            }
-                                                            
-                                                            RunLoop.current.add(settlingTimer, forMode: .common)
-                                                            return
-                                                        }
-                                                        
-                                                        // Update position based on velocity
-                                                        let totalWidth = Double(geometry.size.width - 40)
-                                                        let dragAmount = sliderDragVelocity * dt
-                                                        let dragNormalized = dragAmount / totalWidth
-                                                        
-                                                        // Calculate new position
-                                                        var newValue = sliderValue + (dragNormalized * Double(totalCards - 1))
-                                                        newValue = max(0, min(Double(totalCards - 1), newValue))
-                                                        
-                                                        // Only update if in bounds
-                                                        if newValue >= 0 && newValue <= Double(totalCards - 1) {
-                                                            sliderValue = newValue
-                                                        } else {
-                                                            // Hit boundary, stop animating
-                                                            timer.invalidate()
-                                                            isAnimatingSlider = false
-                                                        }
-                                                    }
-                                                    
-                                                    // Ensure timer stops if view disappears
-                                                    RunLoop.current.add(timer, forMode: .common)
-                                                }
-                                                
-                                                // Clear state
-                                                lastDragLocation = nil
-                                                lastDragTime = nil
-                                            }
-                                    )
-                            }
-                            .disabled(isExpanded) // Disable slider when a card is expanded
+                        // Control section
+                        VStack(spacing: 24) {
+                            // Physics-based slider
+                            sliderSection(
+                                title: "Physics Slider",
+                                value: $physicsSliderValue,
+                                color: .blue,
+                                isActive: activeControl == .physicsSlider,
+                                onActivate: { activeControl = .physicsSlider },
+                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader) },
+                                geometry: geometry,
+                                isDisabled: isExpanded
+                            )
                             
-                            // Card position indicators 
-                            HStack {
-                                Text("1")
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                                Spacer()
-                                Text(String(format: "%d", Int(sliderValue) + 1))
-                                    .font(.caption2)
-                                    .foregroundColor(.blue)
-                                    .padding(4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(Color.blue.opacity(0.1))
-                                    )
-                                    .animation(.none, value: sliderValue)
-                                Spacer()
-                                Text(String(totalCards))
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                            }
-                            .padding(.horizontal, 24)
+                            // Standard slider 
+                            sliderSection(
+                                title: "Standard Slider",
+                                value: $standardSliderValue,
+                                color: .green,
+                                isActive: activeControl == .standardSlider,
+                                onActivate: { activeControl = .standardSlider },
+                                onChange: { scrollToCard(index: Int($0.rounded()), proxy: scrollViewReader) },
+                                geometry: geometry,
+                                usesPhysics: false,
+                                isDisabled: isExpanded
+                            )
                         }
+                        .padding(.horizontal)
                     }
                     .onAppear {
                         scrollViewProxy = scrollViewReader
                         impactFeedback.prepare()
                     }
+                    .onChange(of: currentCardIndex) { _, newIndex in
+                        // When the card changes, update the inactive sliders
+                        if activeControl != .physicsSlider {
+                            physicsSliderValue = Double(newIndex)
+                        }
+                        if activeControl != .standardSlider {
+                            standardSliderValue = Double(newIndex)
+                        }
+                    }
                 }
-                .frame(height: geometry.size.height) // Fill the height
+                .frame(height: geometry.size.height)
                 .frame(maxHeight: .infinity)
-                .position(x: geometry.size.width / 2, y: geometry.size.height / 2) // Center in the view
-                .allowsHitTesting(!isExpanded || expandedCardIndex == nil) // Prevent scrolling when a card is expanded
+                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
         }
     }
     
-    private func cardView(for index: Int) -> some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(cardColor(for: index))
-            .shadow(radius: 3)
+    // Reusable slider section
+    func sliderSection(
+        title: String,
+        value: Binding<Double>,
+        color: Color,
+        isActive: Bool,
+        onActivate: @escaping () -> Void,
+        onChange: @escaping (Double) -> Void,
+        geometry: GeometryProxy,
+        usesPhysics: Bool = true,
+        isDisabled: Bool = false
+    ) -> some View {
+        VStack(spacing: 4) {
+            // Title
+            Text(title)
+                .font(.caption)
+                .foregroundColor(isActive ? color : .gray.opacity(0.5))
+                .fontWeight(isActive ? .bold : .regular)
+            
+            // Slider
+            VStack {
+                // When inactive, show a tap area to activate
+                if !isActive {
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .frame(height: 44)
+                        .onTapGesture {
+                            onActivate()
+                            value.wrappedValue = Double(currentCardIndex)
+                        }
+                }
+                
+                // The actual slider
+                if usesPhysics {
+                    // Physics-based slider
+                    ZStack {
+                        Slider(value: value, in: 0...Double(totalCards - 1))
+                            .accentColor(color)
+                            .opacity(isActive ? 1.0 : 0.5)
+                            .onChange(of: value.wrappedValue) { _, newValue in
+                                if isActive {
+                                    onChange(newValue)
+                                }
+                            }
+                        
+                        // For physics slider, we need a custom drag gesture
+                        if isActive {
+                            Rectangle()
+                                .fill(Color.clear)
+                                .contentShape(Rectangle())
+                                .frame(height: 44)
+                                .gesture(
+                                    DragGesture(minimumDistance: 0)
+                                        .onChanged { gesture in
+                                            // Initialize on first touch
+                                            if !isDraggingPhysicsSlider {
+                                                value.wrappedValue = Double(currentCardIndex)
+                                            }
+                                            
+                                            isDraggingPhysicsSlider = true
+                                            isAnimatingPhysicsSlider = false
+                                            
+                                            // Calculate velocity
+                                            let now = Date()
+                                            let dragAmount = gesture.location.x
+                                            let totalWidth = geometry.size.width - 40
+                                            
+                                            // If we're tracking the drag
+                                            if let lastTime = lastDragTime {
+                                                let dt = now.timeIntervalSince(lastTime)
+                                                if dt > 0 {
+                                                    let dx = dragAmount - lastDragLocation!.x
+                                                    velocity = Double(dx) / dt
+                                                }
+                                            }
+                                            
+                                            // Store current position
+                                            lastDragLocation = gesture.location
+                                            lastDragTime = now
+                                            
+                                            // Update slider value based on drag
+                                            let draggableRange = Double(totalCards - 1)
+                                            let stepSize = draggableRange / Double(totalWidth)
+                                            
+                                            // Calculate change relative to drag start
+                                            let deltaX = gesture.location.x - gesture.startLocation.x
+                                            let newValue = Double(currentCardIndex) + (Double(deltaX) * stepSize)
+                                            
+                                            // Apply with bounds check
+                                            value.wrappedValue = max(0, min(draggableRange, newValue))
+                                        }
+                                        .onEnded { _ in
+                                            // Handle physics-based inertia
+                                            isDraggingPhysicsSlider = false
+                                            
+                                            // Apply inertia if velocity is significant
+                                            if abs(velocity) > 100 {
+                                                isAnimatingPhysicsSlider = true
+                                                
+                                                // Physics animation
+                                                var lastUpdateTime = Date()
+                                                let friction = 0.94
+                                                let minVelocity = 0.1
+                                                
+                                                // Create timer for physics simulation
+                                                let timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { timer in
+                                                    let now = Date()
+                                                    let dt = now.timeIntervalSince(lastUpdateTime)
+                                                    lastUpdateTime = now
+                                                    
+                                                    // Apply friction
+                                                    velocity *= pow(friction, dt * 60)
+                                                    
+                                                    // Stop when very slow
+                                                    if abs(velocity) < minVelocity {
+                                                        timer.invalidate()
+                                                        isAnimatingPhysicsSlider = false
+                                                        
+                                                        // Snap to nearest card
+                                                        let targetIndex = Int(value.wrappedValue.rounded())
+                                                        value.wrappedValue = Double(targetIndex)
+                                                        return
+                                                    }
+                                                    
+                                                    // Apply velocity to position
+                                                    let totalWidth = Double(geometry.size.width - 40)
+                                                    let deltaX = velocity * dt
+                                                    let normalizedDelta = deltaX / totalWidth
+                                                    let valueChange = normalizedDelta * Double(totalCards - 1)
+                                                    
+                                                    // Update position with bounds check
+                                                    let newValue = value.wrappedValue + valueChange
+                                                    if newValue >= 0 && newValue <= Double(totalCards - 1) {
+                                                        value.wrappedValue = newValue
+                                                    } else {
+                                                        // Hit boundary, stop animation
+                                                        timer.invalidate()
+                                                        isAnimatingPhysicsSlider = false
+                                                    }
+                                                }
+                                                
+                                                // Ensure timer stops if view disappears
+                                                RunLoop.current.add(timer, forMode: .common)
+                                            }
+                                            
+                                            // Reset tracking
+                                            lastDragLocation = nil
+                                            lastDragTime = nil
+                                        }
+                                )
+                        }
+                    }
+                } else {
+                    // Standard slider - use built-in drag handling
+                    Slider(value: value, in: 0...Double(totalCards - 1))
+                        .accentColor(color)
+                        .opacity(isActive ? 1.0 : 0.5)
+                        .onChange(of: value.wrappedValue) { _, newValue in
+                            if isActive {
+                                onChange(newValue)
+                            }
+                        }
+                        .onTapGesture {
+                            if !isActive {
+                                onActivate()
+                                value.wrappedValue = Double(currentCardIndex)
+                            }
+                        }
+                        // Standard slider doesn't use the physics system
+                        .disabled(!isActive)
+                }
+                
+                // Position indicators
+                HStack {
+                    Text("1")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    Text(String(format: "%d", Int(value.wrappedValue) + 1))
+                        .font(.caption2)
+                        .foregroundColor(color)
+                        .padding(4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(color.opacity(0.1))
+                        )
+                        .animation(.none, value: value.wrappedValue)
+                    Spacer()
+                    Text(String(totalCards))
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+        .disabled(isDisabled)
+    }
+    
+    // Scroll to a specific card
+    func scrollToCard(index: Int, proxy: ScrollViewProxy) {
+        withAnimation(.linear(duration: 0.01)) {
+            proxy.scrollTo(index, anchor: .center)
+        }
+    }
+    
+    // Card view helper
+    func cardView(for index: Int, isActive: Bool = false) -> some View {
+        let color = isActive ? Color.black : cardColor(for: index)
+        
+        return RoundedRectangle(cornerRadius: 12)
+            .fill(color)
+            .shadow(radius: isActive ? 4 : 3)
             .overlay(
                 Text("Card \(index + 1)")
                     .foregroundColor(.white)
                     .font(.headline)
+            )
+            .overlay(
+                // Simple indicator for active card
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.white, lineWidth: isActive ? 2 : 0)
             )
             .onTapGesture {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
@@ -385,17 +440,17 @@ struct CardScrollView: View {
                     }
                 }
             }
-            // These are now handled in the ZStack overlay for expanded cards
-            .zIndex(1)
-            .disabled(isExpanded && expandedCardIndex != index) // Disable other cards when one is expanded
+            .disabled(isExpanded && expandedCardIndex != index)
     }
     
-    private func cardColor(for index: Int) -> Color {
+    // Helper for card colors
+    func cardColor(for index: Int) -> Color {
         let colors: [Color] = [.blue, .red, .green, .orange, .purple, .pink]
         return colors[index % colors.count]
     }
     
-    private func checkIfCardIsCentered(frame: CGRect, index: Int) {
+    // Helper to detect centered cards
+    func checkIfCardIsCentered(frame: CGRect, index: Int) {
         // Calculate center position of the view
         let viewCenter = viewWidth / 2
         
@@ -405,26 +460,25 @@ struct CardScrollView: View {
         // Check if card is near center (within 20 points)
         let isCentered = abs(viewCenter - cardCenter) < 20
         
-        // If card is centered and it's a different card than before, trigger haptic and update slider
-        if isCentered && lastCenteredIndex != index {
-            lastCenteredIndex = index
+        // If card is centered, trigger haptic and update index
+        if isCentered && currentCardIndex != index {
+            // Update the current index without heavy animations
+            currentCardIndex = index
+            
+            // Give haptic feedback
             impactFeedback.impactOccurred()
             
-            // Always update the slider position when scrolling the cards,
-            // but only if the slider is not actively controlling the cards
-            if !isDraggingSlider && !isAnimatingSlider {
-                DispatchQueue.main.async {
-                    // Update slider position without triggering animations
-                    sliderValue = Double(index)
-                }
+            // Ensure we only update active slider if cards are the active control
+            if activeControl == .cards {
+                physicsSliderValue = Double(index)
+                standardSliderValue = Double(index)
             }
-            
-            // Update display index for current position
-            displayCardIndex = index
         }
     }
 }
 
-#Preview {
-    CardScrollView(onDismiss: {})
+struct CardScrollView_Previews: PreviewProvider {
+    static var previews: some View {
+        CardScrollView(onDismiss: {})
+    }
 }

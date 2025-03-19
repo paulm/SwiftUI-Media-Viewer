@@ -29,6 +29,12 @@ gestures, and intuitive controls.
   - LazyVGrid implementation for performance
   - Supports large collections
   - Visual indicators for media type
+- **Interactive Card Scroll View**:
+  - Horizontal scrolling with 100+ cards
+  - Active card highlighting with haptic feedback
+  - Multiple control methods (direct card interaction, physics-based slider, standard slider)
+  - Card expansion with tap gestures
+  - Smooth transitions and animations
 - **Responsive Design**:
   - Content follows user's touch for immediate feedback
   - Physics-based animations with velocity detection
@@ -149,6 +155,36 @@ The viewer is built with a clean component-based architecture:
 - **ImageViewer**: Component for displaying and loading images
 - **VideoPlayerView**: Component for video playback with custom controls
 - **MediaThumbnail**: Used for grid display in ContentView
+- **CardScrollView**: Interactive card-based scrolling view with multiple control methods
+
+### Card Scroll View Implementation
+
+To use the card scrolling view in your project:
+
+```swift
+import SwiftUI
+
+struct YourView: View {
+    @State private var showCardViewer = false
+    
+    var body: some View {
+        Button("Show Card Viewer") {
+            showCardViewer = true
+        }
+        .fullScreenCover(isPresented: $showCardViewer) {
+            CardScrollView(onDismiss: {
+                showCardViewer = false
+            })
+        }
+    }
+}
+```
+
+The card scroll view provides multiple interaction methods:
+- Direct card scrolling (tap and drag cards)
+- Physics-based slider with inertial scrolling
+- Standard slider for precise control
+- Tap to expand card to full screen
 
 ## Customization
 
