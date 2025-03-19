@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var showMediaViewer = false
+    @State private var showCardViewer = false
     @State private var selectedMediaIndex = 0
     @State private var mediaItems: [MediaItem] = []
     
@@ -46,6 +47,18 @@ struct ContentView: View {
                         .padding(.horizontal, 10)
                     }
                 }
+                
+                Button(action: {
+                    showCardViewer = true
+                }) {
+                    Text("Viewer 02")
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        .padding(.horizontal)
+                }
                 .padding(.vertical)
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -69,6 +82,13 @@ struct ContentView: View {
                     showMediaViewer = false
                 }
             )
+        }
+        
+        // Card viewer with fullscreen presentation
+        .fullScreenCover(isPresented: $showCardViewer) {
+            CardScrollView(onDismiss: {
+                showCardViewer = false
+            })
         }
     }
     
