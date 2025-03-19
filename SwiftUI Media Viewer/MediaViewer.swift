@@ -39,7 +39,6 @@ class MediaViewerModel {
     var dragDirection: DragDirection = .none
     var dragOffset: CGFloat = 0
     var verticalDragOffset: CGFloat = 0
-    var dismissScale: CGFloat = 1.0
     var dismissOpacity: CGFloat = 1.0
     var isDragging: Bool = false  // Track active dragging state
     
@@ -81,7 +80,6 @@ class MediaViewerModel {
     func resetDragState() {
         dragOffset = 0
         verticalDragOffset = 0
-        dismissScale = 1.0
         dismissOpacity = 1.0
         dragDirection = .none
     }
@@ -197,25 +195,25 @@ struct MediaViewer: View {
             Color.black
                 .ignoresSafeArea()
             
-            // SIMPLE IMPLEMENTATION: Direct drag offset application
+            // Implementation with spacing between items but fixed size
             ZStack {
-                // Current item view with direct offset
+                // Current item is always at 1.0 scale - no scaling during regular dragging
                 mediaItemView(for: model.currentItem, geometry: geometry)
                 
-                // Previous item (preloaded when dragging right)
+                // Previous item (preloaded when dragging right) - with spacing only
                 if model.dragOffset > 0, let previousItem = model.previousItem {
                     mediaItemView(for: previousItem, geometry: geometry)
-                        .offset(x: -geometry.size.width)
+                        .offset(x: -(geometry.size.width + 60)) // Add 60pt spacing
                 }
                 
-                // Next item (preloaded when dragging left)
+                // Next item (preloaded when dragging left) - with spacing only
                 if model.dragOffset < 0, let nextItem = model.nextItem {
                     mediaItemView(for: nextItem, geometry: geometry)
-                        .offset(x: geometry.size.width)
+                        .offset(x: geometry.size.width + 60) // Add 60pt spacing
                 }
             }
             .offset(x: model.dragOffset, y: model.verticalDragOffset) // Direct drag translation
-            .scaleEffect(model.dismissScale)
+            // Only apply opacity change during drag, maintain full size
             .opacity(model.dismissOpacity)
         }
         .contentShape(Rectangle())
@@ -230,9 +228,8 @@ struct MediaViewer: View {
                     model.dragOffset = value.translation.width
                     model.verticalDragOffset = value.translation.height
                     
-                    // Simple scale and opacity effects
+                    // Only adjust opacity during drag, no scale changes
                     let dragDistance = sqrt(pow(value.translation.width, 2) + pow(value.translation.height, 2))
-                    model.dismissScale = max(0.9, 1.0 - dragDistance / 2000)
                     model.dismissOpacity = max(0.7, 1.0 - dragDistance / 1000)
                     
                     // Hide controls immediately on drag
@@ -277,19 +274,19 @@ struct MediaViewer: View {
         let predictiveDistance = value.predictedEndLocation.x - value.location.x
         let isPredictiveSwipe = abs(predictiveDistance) > geometry.size.width * 0.1
         
-        // Thresholds - more forgiving with higher velocity
+        // Thresholds - account for spacing and be more forgiving with higher velocity
         let velocityImpact = min(1.0, velocity / 500)
-        let horizontalThreshold = geometry.size.width * 0.25 * (1.0 - velocityImpact*0.5)
+        let itemSpacing = 60.0 // Match spacing between items
+        let horizontalThreshold = (geometry.size.width + itemSpacing) * 0.2 * (1.0 - velocityImpact*0.5)
         let verticalThreshold = model.dismissThreshold * (1.0 - velocityImpact*0.5)
         
         // CASE 1: Dismiss (vertical swipe)
         if (model.dragDirection == .vertical && model.verticalDragOffset > verticalThreshold) ||
            (model.verticalDragOffset > 120) {
             
-            // Animation to dismiss
+            // Animation to dismiss - no scale change
             withAnimation(.easeOut(duration: 0.25)) {
                 model.verticalDragOffset = geometry.size.height
-                model.dismissScale = 0.5
                 model.dismissOpacity = 0
             }
             
@@ -305,9 +302,9 @@ struct MediaViewer: View {
                   (isPredictiveSwipe && predictiveDistance < 0)) && 
                   model.currentIndex < model.mediaItems.count - 1 {
             
-            // Animation to slide to next item
+            // Simple slide animation to next item
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                model.dragOffset = -geometry.size.width
+                model.dragOffset = -(geometry.size.width + 60) // Match the spacing we added
                 model.verticalDragOffset = 0
             }
             
@@ -323,9 +320,9 @@ struct MediaViewer: View {
                   (isPredictiveSwipe && predictiveDistance > 0)) && 
                   model.currentIndex > 0 {
             
-            // Animation to slide to previous item
+            // Simple slide animation to previous item
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                model.dragOffset = geometry.size.width
+                model.dragOffset = geometry.size.width + 60 // Match the spacing we added
                 model.verticalDragOffset = 0
             }
             
@@ -343,13 +340,12 @@ struct MediaViewer: View {
             let springResponse = 0.3 + min(0.15, speed)
             let springDampingFraction = 0.7 - min(0.25, speed) // Less damping = more bounce
             
-            // Bounce-back animation
+            // Bounce-back animation - no scale change
             withAnimation(.spring(response: springResponse, 
                                  dampingFraction: springDampingFraction, 
                                  blendDuration: 0.2)) {
                 model.dragOffset = 0
                 model.verticalDragOffset = 0
-                model.dismissScale = 1.0
                 model.dismissOpacity = 1.0
             }
             
