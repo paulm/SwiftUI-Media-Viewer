@@ -4,6 +4,9 @@ A polished, SwiftUI-based media viewer for iOS that supports both images and vid
 This viewer provides a user experience similar to Apple's Photos app with smooth transitions, responsive
 gestures, and intuitive controls.
 
+![2025-03-18-Preview-Simulator Screenshot - iPhone 16 Pro - 2025-03-18 at 21 09 50 png](https://github.com/user-attachments/assets/cf968de7-d206-47fc-b690-58aaf81f3e20)
+
+
 ![Platform](https://img.shields.io/badge/Platform-iOS%2016.0+-blue.svg)
 ![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg)
 
