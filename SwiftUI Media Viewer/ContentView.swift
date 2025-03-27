@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showMediaViewer = false
     @State private var showCardViewer = false
     @State private var selectedMediaIndex = 0
+    @State private var selectedThumbnailFrame: CGRect = .zero
     @State private var mediaItems: [MediaItem] = []
     
     let columns = [
@@ -38,8 +39,9 @@ struct ContentView: View {
                         // Media grid
                         LazyVGrid(columns: columns, spacing: 8) {
                             ForEach(Array(mediaItems.enumerated()), id: \.element.id) { index, item in
-                                MediaThumbnail(item: item) {
+                                MediaThumbnail(item: item) { frame in
                                     selectedMediaIndex = index
+                                    selectedThumbnailFrame = frame
                                     showMediaViewer = true
                                 }
                             }
@@ -73,15 +75,17 @@ struct ContentView: View {
             loadMediaItems()
         }
         
-        // Media viewer with fullscreen presentation
+        // Media viewer with custom presentation style
         .fullScreenCover(isPresented: $showMediaViewer) {
             MediaViewer(
                 startIndex: selectedMediaIndex,
                 mediaItems: mediaItems,
+                sourceFrame: selectedThumbnailFrame,
                 onDismiss: {
                     showMediaViewer = false
                 }
             )
+            .transition(.opacity) // Use fade transition instead of slide
         }
         
         // Card viewer with fullscreen presentation
@@ -206,65 +210,73 @@ struct ContentView: View {
 // Thumbnail for a media item in the grid
 struct MediaThumbnail: View {
     let item: MediaItem
-    let onTap: () -> Void
+    let onTap: (CGRect) -> Void
     
     var body: some View {
-        Button(action: onTap) {
-            ZStack(alignment: .bottomTrailing) {
-                // Media thumbnail
-                Group {
-                    if item.type == .image {
-                        AsyncImage(url: item.url) { phase in
-                            switch phase {
-                            case .empty:
+        GeometryReader { geo in
+            Button(action: {
+                // Pass the global frame of this thumbnail to the parent
+                let frame = geo.frame(in: .global)
+                onTap(frame)
+            }) {
+                ZStack(alignment: .bottomTrailing) {
+                    // Media thumbnail
+                    Group {
+                        if item.type == .image {
+                            AsyncImage(url: item.url) { phase in
+                                switch phase {
+                                case .empty:
+                                    Rectangle()
+                                        .fill(Color.gray.opacity(0.3))
+                                        .overlay(ProgressView().scaleEffect(0.5))
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                case .failure:
+                                    Rectangle()
+                                        .fill(Color.gray.opacity(0.3))
+                                        .overlay(
+                                            Image(systemName: "photo")
+                                                .font(.caption)
+                                                .foregroundColor(.white)
+                                        )
+                                @unknown default:
+                                    EmptyView()
+                                }
+                            }
+                        } else {
+                            // Video thumbnail with icon
+                            ZStack {
                                 Rectangle()
-                                    .fill(Color.gray.opacity(0.3))
-                                    .overlay(ProgressView().scaleEffect(0.5))
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            case .failure:
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.3))
-                                    .overlay(
-                                        Image(systemName: "photo")
-                                            .font(.caption)
-                                            .foregroundColor(.white)
-                                    )
-                            @unknown default:
-                                EmptyView()
+                                    .fill(Color(UIColor.systemGray5))
+                                Image(systemName: "play.rectangle.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white)
                             }
                         }
-                    } else {
-                        // Video thumbnail with icon
-                        ZStack {
-                            Rectangle()
-                                .fill(Color(UIColor.systemGray5))
-                            Image(systemName: "play.rectangle.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(.white)
-                        }
+                    }
+                    .frame(width: 60, height: 60) // Square aspect ratio
+                    .clipped()
+                    .cornerRadius(4)
+                    
+                    // Video indicator badge
+                    if item.type == .video {
+                        Image(systemName: "video.fill")
+                            .font(.caption2)
+                            .padding(3)
+                            .background(Color.black.opacity(0.7))
+                            .foregroundColor(.white)
+                            .clipShape(Circle())
+                            .padding(3)
                     }
                 }
-                .frame(width: 60, height: 60) // Square aspect ratio
-                .clipped()
-                .cornerRadius(4)
-                
-                // Video indicator badge
-                if item.type == .video {
-                    Image(systemName: "video.fill")
-                        .font(.caption2)
-                        .padding(3)
-                        .background(Color.black.opacity(0.7))
-                        .foregroundColor(.white)
-                        .clipShape(Circle())
-                        .padding(3)
-                }
+                .padding(3) // Add padding around each thumbnail
             }
-            .padding(3) // Add padding around each thumbnail
+            .buttonStyle(PlainButtonStyle())
+            .id(item.id) // Ensure unique identification
         }
-        .buttonStyle(PlainButtonStyle())
+        .frame(width: 60, height: 60) // Match the inner image size
     }
 }
 

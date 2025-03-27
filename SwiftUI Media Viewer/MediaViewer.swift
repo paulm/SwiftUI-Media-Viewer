@@ -137,12 +137,18 @@ struct MediaViewer: View {
     // UI State
     @State private var isDismissing = false
     @State private var verticalDragOffset: CGFloat = 0
+    @State private var animationProgress: CGFloat = 0
+    
+    // Hero animation
+    let sourceFrame: CGRect
+    @State private var isAnimatingEntry = true
     
     // Haptics
     private let hapticLight = UIImpactFeedbackGenerator(style: .light)
     private let hapticMedium = UIImpactFeedbackGenerator(style: .medium)
     
-    init(startIndex: Int = 0, mediaItems: [MediaItem] = [], onDismiss: @escaping () -> Void) {
+    init(startIndex: Int = 0, mediaItems: [MediaItem] = [], sourceFrame: CGRect = .zero, onDismiss: @escaping () -> Void) {
+        self.sourceFrame = sourceFrame
         let model = MediaViewerModel()
         model.mediaItems = mediaItems
         model.currentIndex = startIndex
@@ -153,14 +159,24 @@ struct MediaViewer: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // Black background for the entire view
-                Color.black.ignoresSafeArea()
+                // Clear background for the hero animation
+                Color.clear
+                    .ignoresSafeArea()
+                
+                // Black background that fades in
+                Color.black.opacity(animationProgress)
+                    .ignoresSafeArea()
                 
                 if !model.mediaItems.isEmpty, let currentItem = model.currentItem {
+                    // Hero animation for entry
+                    if isAnimatingEntry, model.currentIndex < model.mediaItems.count {
+                        let item = model.mediaItems[model.currentIndex]
+                        heroAnimationView(for: item, in: geometry)
+                    }
                     // Main carousel with UIPageViewController for stable behavior
                     carouselView(geometry: geometry)
                         .offset(y: verticalDragOffset)
-                        .opacity(isDismissing ? 0 : 1)
+                        .opacity(animationProgress) // Simple fade in/out with animationProgress
                         // Apply a scale effect during vertical drag to provide visual feedback
                         .scaleEffect(
                             verticalDragOffset != 0 ? 
@@ -183,10 +199,25 @@ struct MediaViewer: View {
             .statusBar(hidden: true)
             .onAppear {
                 prepareHaptics()
-                model.autoHideControls()
                 
                 // Add notification observers for UIKit interaction
                 setupNotificationObservers()
+                
+                // Initialize animation progress
+                animationProgress = 0
+                
+                // Start the hero animation
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    animationProgress = 1.0
+                }
+                
+                // Hide hero animation view after it completes
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    withAnimation {
+                        isAnimatingEntry = false
+                    }
+                    model.autoHideControls()
+                }
             }
             .onDisappear {
                 // Remove notification observers
@@ -246,16 +277,17 @@ struct MediaViewer: View {
                                            (verticalDragOffset > 50 && velocity > 500)
                         
                         if shouldDismiss {
-                            // Animation to dismiss
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                verticalDragOffset = geometry.size.height
-                                isDismissing = true
+                            // Use a fade-out animation to dismiss
+                            hapticMedium.impactOccurred()
+                            isDismissing = true
+                            
+                            // Animate the opacity to fade out
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                animationProgress = 0
                             }
                             
-                            hapticMedium.impactOccurred()
-                            
                             // Dismiss after animation completes
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                                 model.onDismiss()
                             }
                         } else {
@@ -416,6 +448,64 @@ struct MediaViewer: View {
                 withAnimation {
                     model.showControls = false
                 }
+            }
+        }
+    }
+    
+    // Hero animation view for smooth entry transition
+    @ViewBuilder
+    private func heroAnimationView(for item: MediaItem, in geometry: GeometryProxy) -> some View {
+        // Only show if we have a valid source frame
+        if sourceFrame.width > 0 {
+            if item.type == .image {
+                AsyncImage(url: item.url) { phase in
+                    switch phase {
+                    case .empty:
+                        Color.gray.opacity(0.3)
+                            .frame(width: 60, height: 60) // Initial thumbnail size
+                            .cornerRadius(4)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 60, height: 60) // Initial thumbnail size
+                            .cornerRadius(4)
+                    case .failure:
+                        Color.gray.opacity(0.3)
+                            .frame(width: 60, height: 60) // Initial thumbnail size
+                            .cornerRadius(4)
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                            )
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
+                .frame(width: 60, height: 60) // Initial thumbnail size
+                .scaleEffect(animationProgress * ((geometry.size.width / 60) * 0.9)) // Scale up to full screen
+                .position(
+                    x: sourceFrame.midX + (geometry.size.width/2 - sourceFrame.midX) * animationProgress,
+                    y: sourceFrame.midY + (geometry.size.height/2 - sourceFrame.midY) * animationProgress
+                )
+                .zIndex(10) // Ensure it appears above other elements
+            } else {
+                // For videos, use a simpler placeholder
+                ZStack {
+                    Color(UIColor.systemGray5)
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.white)
+                }
+                .frame(width: 60, height: 60) // Initial thumbnail size
+                .cornerRadius(4)
+                .scaleEffect(animationProgress * ((geometry.size.width / 60) * 0.9)) // Scale up to full screen
+                .position(
+                    x: sourceFrame.midX + (geometry.size.width/2 - sourceFrame.midX) * animationProgress,
+                    y: sourceFrame.midY + (geometry.size.height/2 - sourceFrame.midY) * animationProgress
+                )
+                .zIndex(10) // Ensure it appears above other elements
             }
         }
     }
